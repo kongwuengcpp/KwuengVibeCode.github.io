@@ -124,6 +124,7 @@ service cloud.firestore {
     // Shared Exams Collection (/exams/{examId})
     match /exams/{examId} {
       allow get: if isValidId(examId);
+      allow list: if true;
       allow create: if isValidId(examId) && isValidExamDocument(incoming(), examId);
       allow update: if isValidId(examId) && isValidExamDocument(incoming(), examId) && incoming().id == existing().id && (
         isAuthenticatedAdmin() ||

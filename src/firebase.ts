@@ -6,8 +6,13 @@ import {
   getDoc,
   setDoc,
   deleteDoc,
+  collection,
   onSnapshot,
   getDocFromServer,
+  QuerySnapshot,
+  DocumentData,
+  QueryDocumentSnapshot,
+  FirestoreError,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import { Exam, ExamCategory, SiteBranding, DEFAULT_SITE_BRANDING } from './types/exam';
@@ -186,100 +191,37 @@ export async function saveSiteBrandingToCloud(branding: SiteBranding): Promise<v
   }
 }
 
-const CATALOG_DOC_ID = 'catalog_index';
-
-export async function saveCatalogIdsToCloud(examIds: string[]): Promise<void> {
-  const path = `exams/${CATALOG_DOC_ID}`;
-  const uniqueIds = Array.from(
-    new Set(
-      examIds
-        .map((id) => sanitizeDocId(id))
-        .filter((id) => Boolean(id) && id !== CATALOG_DOC_ID)
-    )
-  ).slice(0, 500);
-  try {
-    await setDoc(doc(db, 'exams', CATALOG_DOC_ID), {
-      id: CATALOG_DOC_ID,
-      title: 'Danh mục đề thi Cloud',
-      category: 'Lịch sử',
-      durationMinutes: 45,
-      createdAt: '2026',
-      questions: uniqueIds.map((examId) => ({ id: examId })),
-      updatedAt: new Date().toISOString(),
-      adminToken: DEFAULT_ADMIN_KEY,
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
-}
-
-function extractCatalogIds(data: Record<string, unknown> | undefined): string[] {
-  if (!data || !Array.isArray(data.questions)) return [];
-  return data.questions
-    .map((item: unknown) => {
-      if (item && typeof item === 'object' && 'id' in item && typeof (item as { id: unknown }).id === 'string') {
-        return (item as { id: string }).id;
-      }
-      return '';
-    })
-    .filter((id) => Boolean(id) && id !== CATALOG_DOC_ID);
-}
-
 export function subscribeToCloudExams(
-  onUpdate: (exams: Exam[], catalogExists: boolean) => void
+  onUpdate: (exams: Exam[]) => void
 ): () => void {
-  const catalogPath = `exams/${CATALOG_DOC_ID}`;
+  const path = 'exams';
   return onSnapshot(
-    doc(db, 'exams', CATALOG_DOC_ID),
-    async (catalogSnap) => {
-      if (!catalogSnap.exists()) {
-        onUpdate([], false);
-        return;
-      }
-      const rawIds = extractCatalogIds(catalogSnap.data() as Record<string, unknown>);
-
-      if (rawIds.length === 0) {
-        onUpdate([], true);
-        return;
-      }
-
-      const loadedExams: Exam[] = [];
-      for (const rawId of rawIds) {
-        const safeId = sanitizeDocId(rawId);
-        if (!safeId || safeId === CATALOG_DOC_ID) continue;
-        const examPath = `exams/${safeId}`;
-        try {
-          const examSnap = await getDoc(doc(db, 'exams', safeId));
-          if (examSnap.exists()) {
-            const data = examSnap.data();
-            if (data && typeof data.id === 'string' && Array.isArray(data.questions)) {
-              loadedExams.push({
-                id: data.id,
-                examCode: typeof data.examCode === 'string' ? data.examCode : undefined,
-                title: String(data.title || 'Đề thi'),
-                category: String(data.category || 'Lịch sử') as ExamCategory,
-                durationMinutes: Number(data.durationMinutes) || 45,
-                createdAt: String(data.createdAt || ''),
-                questions: data.questions,
-                shuffleQuestions: Boolean(data.shuffleQuestions),
-                shuffleOptions: Boolean(data.shuffleOptions),
-                isFavorite: Boolean(data.isFavorite),
-              });
-            }
-          }
-        } catch (error) {
-          try {
-            handleFirestoreError(error, OperationType.GET, examPath);
-          } catch {
-            // Logged via handleFirestoreError
-          }
+    collection(db, 'exams'),
+    (snapshot: QuerySnapshot<DocumentData>) => {
+      const list: Exam[] = [];
+      snapshot.forEach((docSnap: QueryDocumentSnapshot<DocumentData>) => {
+        if (docSnap.id === 'catalog_index') return;
+        const data = docSnap.data();
+        if (data && typeof data.id === 'string' && Array.isArray(data.questions)) {
+          list.push({
+            id: data.id,
+            examCode: typeof data.examCode === 'string' ? data.examCode : undefined,
+            title: String(data.title || 'Đề thi'),
+            category: String(data.category || 'Lịch sử') as ExamCategory,
+            durationMinutes: Number(data.durationMinutes) || 45,
+            createdAt: String(data.createdAt || ''),
+            questions: data.questions,
+            shuffleQuestions: Boolean(data.shuffleQuestions),
+            shuffleOptions: Boolean(data.shuffleOptions),
+            isFavorite: Boolean(data.isFavorite),
+          });
         }
-      }
-      onUpdate(loadedExams, true);
+      });
+      onUpdate(list);
     },
-    (error) => {
+    (error: FirestoreError) => {
       try {
-        handleFirestoreError(error, OperationType.GET, catalogPath);
+        handleFirestoreError(error, OperationType.LIST, path);
       } catch {
         // Logged via handleFirestoreError
       }
@@ -287,7 +229,7 @@ export function subscribeToCloudExams(
   );
 }
 
-export async function saveExamToCloud(exam: Exam, allExamsList?: Exam[]): Promise<void> {
+export async function saveExamToCloud(exam: Exam): Promise<void> {
   const { id, payload } = sanitizeExamPayload(exam);
   const path = `exams/${id}`;
   try {
@@ -295,24 +237,9 @@ export async function saveExamToCloud(exam: Exam, allExamsList?: Exam[]): Promis
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
-
-  if (allExamsList) {
-    await saveCatalogIdsToCloud(allExamsList.map((e) => e.id));
-  } else {
-    try {
-      const catSnap = await getDoc(doc(db, 'exams', CATALOG_DOC_ID));
-      const existingIds = catSnap.exists()
-        ? extractCatalogIds(catSnap.data() as Record<string, unknown>)
-        : [];
-      const merged = [id, ...existingIds.filter((x) => x !== id)];
-      await saveCatalogIdsToCloud(merged);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, `exams/${CATALOG_DOC_ID}`);
-    }
-  }
 }
 
-export async function deleteExamFromCloud(examId: string, remainingExams?: Exam[]): Promise<void> {
+export async function deleteExamFromCloud(examId: string): Promise<void> {
   const safeId = sanitizeDocId(examId);
   const path = `exams/${safeId}`;
   try {
@@ -320,25 +247,12 @@ export async function deleteExamFromCloud(examId: string, remainingExams?: Exam[
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
-
-  if (remainingExams) {
-    await saveCatalogIdsToCloud(remainingExams.map((e) => e.id));
-  } else {
-    try {
-      const catSnap = await getDoc(doc(db, 'exams', CATALOG_DOC_ID));
-      const existingIds = catSnap.exists()
-        ? extractCatalogIds(catSnap.data() as Record<string, unknown>)
-        : [];
-      await saveCatalogIdsToCloud(existingIds.filter((x) => x !== safeId));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, `exams/${CATALOG_DOC_ID}`);
-    }
-  }
 }
 
 export async function syncAllToCloud(exams: Exam[], branding: SiteBranding): Promise<void> {
   await saveSiteBrandingToCloud(branding);
   for (const exam of exams) {
+    if (!exam || !exam.id || exam.id === 'catalog_index') continue;
     const { id, payload } = sanitizeExamPayload(exam);
     const path = `exams/${id}`;
     try {
@@ -347,5 +261,4 @@ export async function syncAllToCloud(exams: Exam[], branding: SiteBranding): Pro
       handleFirestoreError(error, OperationType.WRITE, path);
     }
   }
-  await saveCatalogIdsToCloud(exams.map((e) => e.id));
 }

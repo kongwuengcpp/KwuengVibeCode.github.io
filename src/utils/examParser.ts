@@ -385,6 +385,8 @@ export function parseExamText(rawText: string): ParsedExamResult {
         if (!current.starredOptions.includes(optKey)) {
           current.starredOptions.push(optKey);
         }
+      } else if (/\(\s*sai\s*\)$/i.test(optText)) {
+        optText = optText.replace(/\(\s*sai\s*\)$/i, '').trim();
       }
 
       if (isStarred && !current.starredOptions.includes(optKey)) {
@@ -489,18 +491,41 @@ export function parseExamText(rawText: string): ParsedExamResult {
     } else {
       // Has options A, B, C, D -> check if multiple or single
       let resolvedMulti: OptionKey[] = [...draft.starredOptions];
+      const isExplicitMulti =
+        /(?:Đúng\s*[\/-]\s*Sai|Nhiều\s*lựa\s*chọn|Phần\s*II)\b/i.test(rawPrompt) ||
+        Boolean(
+          draft.inlineAnswerRaw &&
+            /(?:Đúng|Sai|[ABCD]\s*[:=-]\s*[ĐS]|toàn\s*(?:đúng|sai))/i.test(draft.inlineAnswerRaw)
+        );
 
       if (draft.inlineAnswerRaw) {
-        const letters = draft.inlineAnswerRaw
-          .toUpperCase()
-          .split(/[\s,;]+/)
-          .filter((t): t is OptionKey => ['A', 'B', 'C', 'D'].includes(t));
-        if (letters.length > 0) {
-          resolvedMulti = Array.from(new Set([...resolvedMulti, ...letters]));
-        } else if (/^[ABCD]{2,4}$/i.test(draft.inlineAnswerRaw.trim())) {
-          resolvedMulti = Array.from(
-            new Set(draft.inlineAnswerRaw.toUpperCase().split('') as OptionKey[])
-          );
+        // Check for format: A: Đúng, B: Sai or A: Đ, B: S
+        const tfRegex = /([ABCD])\s*[:=\-]?\s*(Đúng|Đ|True|T|Sai|S|False|F)\b/gi;
+        let tfMatch: RegExpExecArray | null;
+        let hasTfMatch = false;
+        const matchedTrueLetters: OptionKey[] = [];
+        while ((tfMatch = tfRegex.exec(draft.inlineAnswerRaw)) !== null) {
+          hasTfMatch = true;
+          const letter = tfMatch[1].toUpperCase() as OptionKey;
+          const status = tfMatch[2].toUpperCase();
+          if (['ĐÚNG', 'Đ', 'TRUE', 'T'].includes(status)) {
+            matchedTrueLetters.push(letter);
+          }
+        }
+        if (hasTfMatch) {
+          resolvedMulti = Array.from(new Set([...resolvedMulti, ...matchedTrueLetters]));
+        } else {
+          const letters = draft.inlineAnswerRaw
+            .toUpperCase()
+            .split(/[\s,;]+/)
+            .filter((t): t is OptionKey => ['A', 'B', 'C', 'D'].includes(t));
+          if (letters.length > 0) {
+            resolvedMulti = Array.from(new Set([...resolvedMulti, ...letters]));
+          } else if (/^[ABCD]{2,4}$/i.test(draft.inlineAnswerRaw.trim())) {
+            resolvedMulti = Array.from(
+              new Set(draft.inlineAnswerRaw.toUpperCase().split('') as OptionKey[])
+            );
+          }
         }
       }
 
@@ -512,10 +537,10 @@ export function parseExamText(rawText: string): ParsedExamResult {
         }
       }
 
-      if (resolvedMulti.length > 1) {
+      if (resolvedMulti.length > 1 || isExplicitMulti) {
         qType = 'multiple';
         correctAnswers = resolvedMulti;
-        correctAnswer = resolvedMulti[0];
+        correctAnswer = resolvedMulti[0] || 'A';
         hasDetectedAnswer = true;
       } else if (resolvedMulti.length === 1) {
         qType = 'single';

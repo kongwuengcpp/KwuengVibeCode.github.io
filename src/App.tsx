@@ -87,7 +87,10 @@ export default function App() {
 
   const [isAdmin, setIsAdmin] = useState<boolean>(() => {
     try {
-      return sessionStorage.getItem(ADMIN_STORAGE_KEY) === 'true';
+      return (
+        localStorage.getItem(ADMIN_STORAGE_KEY) === 'true' ||
+        sessionStorage.getItem(ADMIN_STORAGE_KEY) === 'true'
+      );
     } catch {
       return false;
     }
@@ -107,7 +110,6 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
   const [cloudSynced, setCloudSynced] = useState<boolean>(false);
-  const hasAutoMigratedLocalRef = useRef<boolean>(false);
 
   const [branding, setBranding] = useState<SiteBranding>(() => {
     try {
@@ -180,43 +182,22 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Real-time Firestore listener for Shared Exams (/exams/catalog_index + /exams/{examId})
-  const brandingRef = useRef<SiteBranding>(branding);
+  // Real-time Firestore listener for Shared Exams (/exams)
   useEffect(() => {
-    brandingRef.current = branding;
-  }, [branding]);
-
-  useEffect(() => {
-    const unsubscribe = subscribeToCloudExams((cloudExams, catalogExists) => {
+    const unsubscribe = subscribeToCloudExams((cloudExams) => {
       setCloudSynced(true);
-      if (cloudExams.length > 0) {
-        setExams((localPrev) => {
-          // If this browser had local exams not yet on cloud, push them once
-          if (!hasAutoMigratedLocalRef.current && localPrev.length > 0) {
-            hasAutoMigratedLocalRef.current = true;
-            const cloudIds = new Set(cloudExams.map((e) => e.id));
-            const unsyncedLocal = localPrev.filter((e) => e && e.id && !cloudIds.has(e.id));
-            if (unsyncedLocal.length > 0) {
-              const merged = [...cloudExams, ...unsyncedLocal];
-              void syncAllToCloud(merged, brandingRef.current);
-              return merged;
-            }
-          }
-          return cloudExams;
-        });
-      } else if (!catalogExists) {
-        // Cloud catalog doesn't exist yet — if this browser has local exams, auto-upload them once!
-        setExams((localPrev) => {
-          if (!hasAutoMigratedLocalRef.current && localPrev.length > 0) {
-            hasAutoMigratedLocalRef.current = true;
-            void syncAllToCloud(localPrev, brandingRef.current);
-            return localPrev;
-          }
-          return [];
-        });
-      } else {
-        setExams([]);
-      }
+      setExams((localPrev) => {
+        // If this browser had local exams that are not on cloud yet, upload them to cloud
+        const cloudIds = new Set(cloudExams.map((e) => e.id));
+        const unsyncedLocal = localPrev.filter((e) => e && e.id && !cloudIds.has(e.id));
+        if (unsyncedLocal.length > 0) {
+          unsyncedLocal.forEach((exam) => {
+            void saveExamToCloud(exam);
+          });
+          return [...cloudExams, ...unsyncedLocal];
+        }
+        return cloudExams;
+      });
     });
     return () => unsubscribe();
   }, []);
@@ -320,6 +301,7 @@ export default function App() {
       if (verifyAdminKey(inputKey, customSaved)) {
         try {
           sessionStorage.setItem(ADMIN_STORAGE_KEY, 'true');
+          localStorage.setItem(ADMIN_STORAGE_KEY, 'true');
         } catch {
           // ignore
         }
@@ -343,6 +325,7 @@ export default function App() {
     window.logoutAdmin = () => {
       try {
         sessionStorage.removeItem(ADMIN_STORAGE_KEY);
+        localStorage.removeItem(ADMIN_STORAGE_KEY);
       } catch {
         // ignore
       }
@@ -517,7 +500,7 @@ export default function App() {
 
     setExams(updatedExams);
     setEditingExam(null);
-    void saveExamToCloud(savedExam, updatedExams).then(() => {
+    void saveExamToCloud(savedExam).then(() => {
       setCloudSynced(true);
     });
 
@@ -555,7 +538,7 @@ export default function App() {
     if (!isAdmin) return;
     const remaining = exams.filter((e) => e.id !== examId);
     setExams(remaining);
-    void deleteExamFromCloud(examId, remaining);
+    void deleteExamFromCloud(examId);
   };
 
   const handleExportExamsJson = () => {
