@@ -4,6 +4,7 @@ import {
   getFirestore,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   deleteDoc,
   collection,
@@ -86,6 +87,8 @@ async function testConnection() {
 
 testConnection();
 
+export const IGNORED_EXAM_IDS = new Set(['catalog_index', 'exam-test-123']);
+
 export function sanitizeDocId(rawId: string): string {
   const cleaned = String(rawId || '')
     .trim()
@@ -93,6 +96,22 @@ export function sanitizeDocId(rawId: string): string {
     .replace(/-+/g, '-')
     .slice(0, 120);
   return cleaned || `exam-${Date.now()}`;
+}
+
+export function deriveExamCode(id: string, existingCode?: string): string {
+  if (existingCode && String(existingCode).trim()) {
+    return String(existingCode).trim().slice(0, 32);
+  }
+  const digits = String(id || '').replace(/\D/g, '');
+  if (digits.length >= 5) {
+    return digits.slice(-5);
+  }
+  let hash = 0;
+  const str = String(id || 'exam');
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash * 31 + str.charCodeAt(i)) % 90000;
+  }
+  return String(10000 + Math.abs(hash));
 }
 
 export function sanitizeSiteBrandingPayload(branding: SiteBranding): Record<string, unknown> {
@@ -125,12 +144,14 @@ export function sanitizeExamPayload(exam: Exam): { id: string; payload: Record<s
 
   const payload: Record<string, unknown> = {
     id: safeId,
+    examCode: deriveExamCode(safeId, exam.examCode),
     title: (String(exam.title || 'Đề thi mới').trim() || 'Đề thi mới').slice(0, 300),
     category: (String(exam.category || 'Lịch sử').trim() || 'Lịch sử').slice(0, 100),
     durationMinutes: Math.min(600, Math.max(1, Number(exam.durationMinutes) || 45)),
     createdAt: (
-      String(exam.createdAt || new Date().toLocaleDateString('vi-VN')).trim() || '2026'
+      String(exam.createdAt || new Date().toLocaleDateString('vi-VN')).trim() || '07/11/2026'
     ).slice(0, 64),
+    uploadTime: (String(exam.uploadTime || '11:30').trim() || '11:30').slice(0, 16),
     questions: cleanQuestions,
     shuffleQuestions: Boolean(exam.shuffleQuestions),
     shuffleOptions: Boolean(exam.shuffleOptions),
@@ -138,10 +159,6 @@ export function sanitizeExamPayload(exam: Exam): { id: string; payload: Record<s
     updatedAt: new Date().toISOString(),
     adminToken: DEFAULT_ADMIN_KEY,
   };
-
-  if (exam.examCode) {
-    payload.examCode = String(exam.examCode).trim().slice(0, 32);
-  }
 
   return { id: safeId, payload };
 }
@@ -191,6 +208,14 @@ export async function saveSiteBrandingToCloud(branding: SiteBranding): Promise<v
   }
 }
 
+function getExamCreationSortValue(exam: Exam): number {
+  const idDigits = String(exam.id || '').match(/(\d{10,15})/);
+  if (idDigits) {
+    return Number(idDigits[1]);
+  }
+  return 0;
+}
+
 export function subscribeToCloudExams(
   onUpdate: (exams: Exam[]) => void
 ): () => void {
@@ -200,16 +225,29 @@ export function subscribeToCloudExams(
     (snapshot: QuerySnapshot<DocumentData>) => {
       const list: Exam[] = [];
       snapshot.forEach((docSnap: QueryDocumentSnapshot<DocumentData>) => {
-        if (docSnap.id === 'catalog_index') return;
+        const docId = docSnap.id;
         const data = docSnap.data();
-        if (data && typeof data.id === 'string' && Array.isArray(data.questions)) {
+        if (IGNORED_EXAM_IDS.has(docId) || (data && IGNORED_EXAM_IDS.has(String(data.id || '')))) {
+          void deleteDoc(doc(db, 'exams', docId)).catch(() => {});
+          return;
+        }
+        if (data && Array.isArray(data.questions)) {
+          const canonicalId = docId || String(data.id || '');
+          if (!canonicalId) return;
           list.push({
-            id: data.id,
-            examCode: typeof data.examCode === 'string' ? data.examCode : undefined,
+            id: canonicalId,
+            examCode: deriveExamCode(
+              canonicalId,
+              typeof data.examCode === 'string' ? data.examCode : undefined
+            ),
             title: String(data.title || 'Đề thi'),
             category: String(data.category || 'Lịch sử') as ExamCategory,
             durationMinutes: Number(data.durationMinutes) || 45,
-            createdAt: String(data.createdAt || ''),
+            createdAt: String(data.createdAt || '07/11/2026'),
+            uploadTime:
+              typeof data.uploadTime === 'string' && data.uploadTime.trim()
+                ? data.uploadTime.trim()
+                : '11:30',
             questions: data.questions,
             shuffleQuestions: Boolean(data.shuffleQuestions),
             shuffleOptions: Boolean(data.shuffleOptions),
@@ -217,6 +255,13 @@ export function subscribeToCloudExams(
           });
         }
       });
+
+      list.sort((a, b) => {
+        const diff = getExamCreationSortValue(b) - getExamCreationSortValue(a);
+        if (diff !== 0) return diff;
+        return b.id.localeCompare(a.id);
+      });
+
       onUpdate(list);
     },
     (error: FirestoreError) => {
@@ -230,6 +275,7 @@ export function subscribeToCloudExams(
 }
 
 export async function saveExamToCloud(exam: Exam): Promise<void> {
+  if (!exam || IGNORED_EXAM_IDS.has(exam.id)) return;
   const { id, payload } = sanitizeExamPayload(exam);
   const path = `exams/${id}`;
   try {
@@ -240,10 +286,25 @@ export async function saveExamToCloud(exam: Exam): Promise<void> {
 }
 
 export async function deleteExamFromCloud(examId: string): Promise<void> {
-  const safeId = sanitizeDocId(examId);
+  const raw = String(examId || '').trim();
+  const safeId = sanitizeDocId(raw);
   const path = `exams/${safeId}`;
   try {
     await deleteDoc(doc(db, 'exams', safeId));
+    if (raw && raw !== safeId) {
+      await deleteDoc(doc(db, 'exams', raw)).catch(() => {});
+    }
+    const snap = await getDocs(collection(db, 'exams'));
+    const extraDeletes: Promise<void>[] = [];
+    snap.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (docSnap.id === raw || docSnap.id === safeId || data?.id === raw || data?.id === safeId) {
+        extraDeletes.push(deleteDoc(doc(db, 'exams', docSnap.id)));
+      }
+    });
+    if (extraDeletes.length > 0) {
+      await Promise.allSettled(extraDeletes);
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -262,9 +323,12 @@ export async function syncAllToCloud(
     lastError = err instanceof Error ? err.message : String(err);
   }
 
+  const activeCloudIds = new Set<string>();
+
   for (const exam of exams) {
-    if (!exam || !exam.id || exam.id === 'catalog_index') continue;
+    if (!exam || !exam.id || IGNORED_EXAM_IDS.has(exam.id)) continue;
     const { id, payload } = sanitizeExamPayload(exam);
+    activeCloudIds.add(id);
     const path = `exams/${id}`;
     try {
       await setDoc(doc(db, 'exams', id), payload);
@@ -277,6 +341,21 @@ export async function syncAllToCloud(
         // Logged via handleFirestoreError
       }
     }
+  }
+
+  try {
+    const snap = await getDocs(collection(db, 'exams'));
+    const staleDeletes: Promise<void>[] = [];
+    snap.forEach((docSnap) => {
+      if (!activeCloudIds.has(docSnap.id) || IGNORED_EXAM_IDS.has(docSnap.id)) {
+        staleDeletes.push(deleteDoc(doc(db, 'exams', docSnap.id)));
+      }
+    });
+    if (staleDeletes.length > 0) {
+      await Promise.allSettled(staleDeletes);
+    }
+  } catch {
+    // Ignore cleanup errors
   }
 
   return {

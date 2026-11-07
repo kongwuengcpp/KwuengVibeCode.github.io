@@ -19,9 +19,12 @@ import {
   saveExamToCloud,
   deleteExamFromCloud,
   syncAllToCloud,
+  IGNORED_EXAM_IDS,
+  sanitizeDocId,
 } from './firebase';
 
 const EXAMS_STORAGE_KEY = 'luyende_online_exams_prod_v1';
+const DELETED_EXAMS_STORAGE_KEY = 'luyende_deleted_exam_ids_v1';
 const ATTEMPTS_STORAGE_KEY = 'luyende_online_attempts_prod_v1';
 const BRANDING_STORAGE_KEY = 'luyende_site_branding_v1';
 const LEGACY_KEYS_TO_CLEAR = [
@@ -53,15 +56,62 @@ function getBasePathname(): string {
   return clean ? `${clean}/` : '/';
 }
 
+function loadDeletedExamIds(): Set<string> {
+  const set = new Set<string>(IGNORED_EXAM_IDS);
+  try {
+    const raw = localStorage.getItem(DELETED_EXAMS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((id) => {
+          if (typeof id === 'string' && id) set.add(id);
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return set;
+}
+
 export default function App() {
+  const deletedExamIdsRef = useRef<Set<string>>(loadDeletedExamIds());
+  const pendingSaveExamIdsRef = useRef<Set<string>>(new Set());
+
+  const persistDeletedIds = useCallback(() => {
+    try {
+      localStorage.setItem(
+        DELETED_EXAMS_STORAGE_KEY,
+        JSON.stringify(Array.from(deletedExamIdsRef.current))
+      );
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const [exams, setExams] = useState<Exam[]>(() => {
     try {
       LEGACY_KEYS_TO_CLEAR.forEach((k) => localStorage.removeItem(k));
+      const deletedSet = loadDeletedExamIds();
       const saved = localStorage.getItem(EXAMS_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed;
+          const seen = new Set<string>();
+          const cleanList: Exam[] = [];
+          for (const item of parsed) {
+            if (
+              item &&
+              typeof item.id === 'string' &&
+              !deletedSet.has(item.id) &&
+              !deletedSet.has(sanitizeDocId(item.id)) &&
+              !seen.has(item.id)
+            ) {
+              seen.add(item.id);
+              cleanList.push(item);
+            }
+          }
+          return cleanList;
         }
       }
     } catch {
@@ -200,16 +250,42 @@ export default function App() {
     const unsubscribe = subscribeToCloudExams((cloudExams) => {
       setCloudSynced(true);
       setExams((localPrev) => {
-        // If this browser had local exams that are not on cloud yet, upload them to cloud
-        const cloudIds = new Set(cloudExams.map((e) => e.id));
-        const unsyncedLocal = localPrev.filter((e) => e && e.id && !cloudIds.has(e.id));
-        if (unsyncedLocal.length > 0) {
-          unsyncedLocal.forEach((exam) => {
-            void saveExamToCloud(exam);
-          });
-          return [...cloudExams, ...unsyncedLocal];
+        const filteredCloud: Exam[] = [];
+        const cloudIds = new Set<string>();
+
+        for (const exam of cloudExams) {
+          const safeId = sanitizeDocId(exam.id);
+          if (
+            deletedExamIdsRef.current.has(exam.id) ||
+            deletedExamIdsRef.current.has(safeId) ||
+            IGNORED_EXAM_IDS.has(exam.id) ||
+            IGNORED_EXAM_IDS.has(safeId)
+          ) {
+            // If this browser explicitly deleted this exam, ensure it's also removed from Cloud
+            if (deletedExamIdsRef.current.has(exam.id) || deletedExamIdsRef.current.has(safeId)) {
+              void deleteExamFromCloud(exam.id).catch(() => {});
+            }
+            continue;
+          }
+          if (!cloudIds.has(exam.id)) {
+            cloudIds.add(exam.id);
+            pendingSaveExamIdsRef.current.delete(exam.id);
+            pendingSaveExamIdsRef.current.delete(safeId);
+            filteredCloud.push(exam);
+          }
         }
-        return cloudExams;
+
+        // Preserve any exam that was just saved locally and is still in-flight to Cloud
+        const inFlightLocal = localPrev.filter(
+          (e) =>
+            e &&
+            e.id &&
+            !cloudIds.has(e.id) &&
+            pendingSaveExamIdsRef.current.has(e.id) &&
+            !deletedExamIdsRef.current.has(e.id)
+        );
+
+        return [...inFlightLocal, ...filteredCloud];
       });
     });
     return () => unsubscribe();
@@ -221,51 +297,6 @@ export default function App() {
       document.title = `${branding.title} - ${branding.subtitle}`;
     }
   }, [branding]);
-
-  // Load static ./exams.json if deployed on GitHub Pages (public/exams.json) as fallback
-  useEffect(() => {
-    let cancelled = false;
-    fetch('./exams.json', { cache: 'no-store' })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((remotePayload) => {
-        if (cancelled || !remotePayload) {
-          return;
-        }
-        const remoteExams: Exam[] = Array.isArray(remotePayload)
-          ? remotePayload
-          : Array.isArray(remotePayload.exams)
-          ? remotePayload.exams
-          : [];
-
-        if (
-          !Array.isArray(remotePayload) &&
-          remotePayload.branding &&
-          typeof remotePayload.branding === 'object'
-        ) {
-          setBranding((prev) => ({ ...prev, ...remotePayload.branding }));
-        }
-
-        if (remoteExams.length === 0) {
-          return;
-        }
-        setExams((prev) => {
-          const existingIds = new Set(prev.map((e) => e.id));
-          const merged = [...prev];
-          for (const item of remoteExams) {
-            if (item && typeof item.id === 'string' && !existingIds.has(item.id)) {
-              merged.push(item as Exam);
-            }
-          }
-          return merged;
-        });
-      })
-      .catch(() => {
-        // Ignore if ./exams.json is not present
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const syncRouteFromLocation = useCallback(
     (currentExams: Exam[], currentIsAdmin: boolean) => {
@@ -299,13 +330,23 @@ export default function App() {
     []
   );
 
-  // Sync URL on mount and browser popstate
+  const examsRef = useRef<Exam[]>(exams);
+  examsRef.current = exams;
+
+  // Initial URL resolution and popstate listener (without resetting active views on background exam sync)
   useEffect(() => {
-    syncRouteFromLocation(exams, isAdmin);
-    const onPopState = () => syncRouteFromLocation(exams, isAdmin);
+    syncRouteFromLocation(examsRef.current, isAdmin);
+    const onPopState = () => syncRouteFromLocation(examsRef.current, isAdmin);
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [exams, isAdmin, syncRouteFromLocation]);
+  }, [isAdmin, syncRouteFromLocation]);
+
+  // If user landed on a direct exam link (?de=...) before Cloud exams finished loading, re-check once exams arrive
+  useEffect(() => {
+    if (activeView === 'forbidden' && exams.length > 0) {
+      syncRouteFromLocation(exams, isAdmin);
+    }
+  }, [exams, activeView, isAdmin, syncRouteFromLocation]);
 
   // Register DevTools Console-only Admin authentication commands
   useEffect(() => {
@@ -319,9 +360,6 @@ export default function App() {
           // ignore
         }
         setIsAdmin(true);
-        void syncAllToCloud(exams, branding).then(() => {
-          setCloudSynced(true);
-        });
         const msg =
           '✅ Đăng nhập Admin thành công! Quyền tạo đề, số hoá Word (.docx), chỉnh sửa và đồng bộ Cloud đã được mở khoá.';
         console.info(`%c${msg}`, 'color: #22c55e; font-weight: bold; font-size: 13px;');
@@ -434,15 +472,16 @@ export default function App() {
 
   const handleStartExam = (examId: string, previewOnly = false) => {
     const base = getBasePathname();
-    const found = exams.find((e) => e.id === examId);
+    const safeTarget = sanitizeDocId(examId);
+    const found = exams.find((e) => e.id === examId || sanitizeDocId(e.id) === safeTarget);
     if (!found) {
       window.history.pushState({}, '', `${base}?de=${encodeURIComponent(examId)}`);
       setActiveView('forbidden');
       setForbiddenReason('Link đề thi không đúng hoặc đề thi không tồn tại.');
       return;
     }
-    window.history.pushState({}, '', `${base}?de=${encodeURIComponent(examId)}`);
-    setActiveExamId(examId);
+    window.history.pushState({}, '', `${base}?de=${encodeURIComponent(found.id)}`);
+    setActiveExamId(found.id);
     setPreviewMode(previewOnly);
     setReviewingAttempt(null);
     setActiveView('take-exam');
@@ -503,24 +542,39 @@ export default function App() {
       return;
     }
 
+    const canonicalId = sanitizeDocId(savedExam.id);
+    const normalizedExam: Exam = {
+      ...savedExam,
+      id: canonicalId,
+    };
+
+    deletedExamIdsRef.current.delete(canonicalId);
+    deletedExamIdsRef.current.delete(savedExam.id);
+    persistDeletedIds();
+    pendingSaveExamIdsRef.current.add(canonicalId);
+
     const updatedExams = (() => {
-      const exists = exams.some((e) => e.id === savedExam.id);
+      const exists = exams.some((e) => sanitizeDocId(e.id) === canonicalId);
       if (exists) {
-        return exams.map((e) => (e.id === savedExam.id ? savedExam : e));
+        return exams.map((e) => (sanitizeDocId(e.id) === canonicalId ? normalizedExam : e));
       }
-      return [savedExam, ...exams];
+      return [normalizedExam, ...exams];
     })();
 
     setExams(updatedExams);
     setEditingExam(null);
-    void saveExamToCloud(savedExam).then(() => {
-      setCloudSynced(true);
-    });
+    void saveExamToCloud(normalizedExam)
+      .then(() => {
+        setCloudSynced(true);
+      })
+      .finally(() => {
+        pendingSaveExamIdsRef.current.delete(canonicalId);
+      });
 
     const base = getBasePathname();
     if (startImmediately) {
-      window.history.pushState({}, '', `${base}?de=${encodeURIComponent(savedExam.id)}`);
-      setActiveExamId(savedExam.id);
+      window.history.pushState({}, '', `${base}?de=${encodeURIComponent(normalizedExam.id)}`);
+      setActiveExamId(normalizedExam.id);
       setPreviewMode(false);
       setReviewingAttempt(null);
       setActiveView('take-exam');
@@ -549,9 +603,29 @@ export default function App() {
 
   const handleDeleteExam = (examId: string) => {
     if (!isAdmin) return;
-    const remaining = exams.filter((e) => e.id !== examId);
-    setExams(remaining);
-    void deleteExamFromCloud(examId);
+    const safeTarget = sanitizeDocId(examId);
+    deletedExamIdsRef.current.add(examId);
+    deletedExamIdsRef.current.add(safeTarget);
+    persistDeletedIds();
+    pendingSaveExamIdsRef.current.delete(examId);
+    pendingSaveExamIdsRef.current.delete(safeTarget);
+
+    setExams((prev) => {
+      const remaining = prev.filter(
+        (e) => e.id !== examId && sanitizeDocId(e.id) !== safeTarget
+      );
+      try {
+        localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(remaining));
+      } catch {
+        // ignore storage quota errors
+      }
+      return remaining;
+    });
+
+    void deleteExamFromCloud(examId).then(() => {
+      setSyncFeedbackMessage('🗑️ Đã xoá vĩnh viễn đề thi khỏi thư viện và Cloud!');
+      setTimeout(() => setSyncFeedbackMessage(''), 4000);
+    });
   };
 
   const handleExportExamsJson = () => {
@@ -586,20 +660,25 @@ export default function App() {
     setExams((prev) => {
       const map = new Map<string, Exam>();
       for (const e of prev) {
-        if (e && e.id) map.set(e.id, e);
+        if (e && e.id) map.set(sanitizeDocId(e.id), { ...e, id: sanitizeDocId(e.id) });
       }
       for (const item of importedExams) {
         if (item && typeof item.id === 'string' && Array.isArray(item.questions)) {
-          map.set(item.id, item);
+          const cid = sanitizeDocId(item.id);
+          deletedExamIdsRef.current.delete(cid);
+          map.set(cid, { ...item, id: cid });
         }
       }
+      persistDeletedIds();
       const merged = Array.from(map.values());
       void syncAllToCloud(merged, nextBranding);
       return merged;
     });
   };
 
-  const currentExam = exams.find((e) => e.id === activeExamId);
+  const currentExam = exams.find(
+    (e) => e.id === activeExamId || (activeExamId && sanitizeDocId(e.id) === sanitizeDocId(activeExamId))
+  );
 
   return (
     <div className="min-h-screen flex flex-col bg-[#f8fafc] text-slate-900">

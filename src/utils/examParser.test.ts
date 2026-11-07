@@ -468,5 +468,38 @@ test('supports 2-box Đúng/Sai questions including all-True and all-False answe
   assert.deepEqual(shuffledAllTrue.correctAnswers, ['A', 'B', 'C', 'D']);
 });
 
+test('keeps PHẦN II and lowercase a/b/c/d questions in Đúng/Sai section even when only 0 or 1 statement is true', () => {
+  const raw = `
+PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn
+Câu 1: Chiến tranh thế giới thứ hai kết thúc vào năm nào?
+*A. 1945
+B. 1939
+C. 1918
+D. 1954
+
+PHẦN II. Câu trắc nghiệm đúng sai
+Câu 1: Đọc đoạn tư liệu sau:
+*a) Ý đúng duy nhất.
+b) Ý sai 1.
+c) Ý sai 2.
+d) Ý sai 3.
+
+Câu 2: Đọc đoạn tư liệu thứ hai (cả 4 ý đều sai):
+A. Ý sai 1 (Sai)
+B. Ý sai 2 (Sai)
+C. Ý sai 3 (Sai)
+D. Ý sai 4 (Sai)
+  `;
+
+  const parsed = parseExamText(raw);
+  assert.equal(parsed.questions.length, 3);
+  assert.equal(parsed.questions[0].type, 'single');
+  assert.equal(parsed.questions[1].type, 'multiple');
+  assert.deepEqual(parsed.questions[1].correctAnswers, ['A']);
+  assert.equal(parsed.questions[2].type, 'multiple');
+  assert.deepEqual(parsed.questions[2].correctAnswers, []);
+});
+
+
 
 

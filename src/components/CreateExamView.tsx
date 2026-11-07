@@ -87,6 +87,22 @@ interface CreateExamViewProps {
 
 type DigitizerTab = 'docx' | 'pdf' | 'ocr' | 'text';
 
+function inferSubjectFromText(input: string): ExamCategory | null {
+  const s = input.toLowerCase();
+  if (/(?:\blịch\s*sử\b|\bsử\b)/.test(s)) return 'Lịch sử';
+  if (/(?:\bvật\s*l[ýí]\b|\bl[ýí]\s*1[012]\b)/.test(s)) return 'Vật lí';
+  if (/(?:\bhó[aá]\s*học\b|\bhó[aá]\s*1[012]\b)/.test(s)) return 'Hóa học';
+  if (/(?:\bsinh\s*học\b|\bsinh\s*1[012]\b)/.test(s)) return 'Sinh học';
+  if (/(?:\btoán\b)/.test(s)) return 'Toán';
+  if (/(?:\bđịa\s*l[ýí]\b|\bđịa\s*1[012]\b)/.test(s)) return 'Địa lí';
+  if (/(?:\btiếng\s*anh\b|\banh\s*văn\b|\benglish\b)/.test(s)) return 'Tiếng Anh';
+  if (/(?:\bgdkt|\bkinh\s*tế\s*pháp\s*luật\b|\bgdcd\b)/.test(s)) return 'GDKT & PL';
+  if (/(?:\btin\s*học\b|\btin\s*1[012]\b)/.test(s)) return 'Tin học';
+  if (/(?:\bcông\s*nghệ\s*nn\b|\bnông\s*nghiệp\b)/.test(s)) return 'Công nghệ NN';
+  if (/(?:\bcông\s*nghệ\b)/.test(s)) return 'Công nghệ CN';
+  return null;
+}
+
 export const CreateExamView: React.FC<CreateExamViewProps> = ({
   branding = DEFAULT_SITE_BRANDING,
   editingExam = null,
@@ -140,11 +156,25 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
   );
   const [formError, setFormError] = useState<string>('');
 
+  const handleTitleChangeWithAutoSubject = (nextTitle: string) => {
+    setTitle(nextTitle);
+    const inferred = inferSubjectFromText(nextTitle);
+    if (inferred) {
+      setCategory(inferred);
+    }
+  };
+
   const handleDocxFileSelect = async (file: File) => {
     setFormError('');
     setDigitizeWarnings([]);
     setIsExtracting(true);
     setSelectedFileName(file.name);
+
+    const cleanName = file.name.replace(/\.(docx|pdf|txt)$/i, '').replace(/[_-]+/g, ' ');
+    const inferredFromFile = inferSubjectFromText(cleanName);
+    if (inferredFromFile) {
+      setCategory(inferredFromFile);
+    }
 
     try {
       if (file.name.toLowerCase().endsWith('.docx')) {
@@ -153,7 +183,6 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
         setRawExtractedText(text);
         const previewParse = parseExamText(text);
         if (!title.trim()) {
-          const cleanName = file.name.replace(/\.docx$/i, '').replace(/[_-]+/g, ' ');
           setTitle(cleanName);
         }
         setDigitizeNotice(
@@ -163,6 +192,9 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
         const text = await file.text();
         setRawExtractedText(text);
         const previewParse = parseExamText(text);
+        if (!title.trim()) {
+          setTitle(cleanName);
+        }
         setDigitizeNotice(
           `Đã đọc tài liệu "${file.name}" (${previewParse.questions.length} câu hỏi). Nhấn "Số hoá ngay" để tiếp tục.`
         );
@@ -207,12 +239,15 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
 
     setQuestions(organizeQuestionsBySection(result.questions));
     setDigitizeWarnings(result.warnings);
-    if (!title.trim()) {
-      setTitle(
-        selectedFileName
-          ? selectedFileName.replace(/\.(docx|pdf|txt)$/i, '').replace(/[_-]+/g, ' ')
-          : `Đề thi số hoá (${result.questions.length} câu)`
-      );
+    const nextTitle = title.trim()
+      ? title.trim()
+      : selectedFileName
+      ? selectedFileName.replace(/\.(docx|pdf|txt)$/i, '').replace(/[_-]+/g, ' ')
+      : `Đề thi số hoá (${result.questions.length} câu)`;
+    setTitle(nextTitle);
+    const inferred = inferSubjectFromText(nextTitle) || inferSubjectFromText(sourceText.slice(0, 300));
+    if (inferred) {
+      setCategory(inferred);
     }
     setMode('manual');
     setDigitizeNotice(
@@ -619,6 +654,55 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                     </div>
                   )}
 
+                  {/* Quick Metadata Bar inside Digitize Tab */}
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-white p-4 rounded-xl border border-slate-200/80">
+                    <div className="md:col-span-2">
+                      <label htmlFor="digitize-title-input" className="block text-xs font-bold text-slate-700 mb-1">
+                        Tên đề thi (tuỳ chọn - tự động lấy theo tên file)
+                      </label>
+                      <input
+                        id="digitize-title-input"
+                        type="text"
+                        value={title}
+                        onChange={(e) => handleTitleChangeWithAutoSubject(e.target.value)}
+                        placeholder="Ví dụ: Đề ôn tập Lịch sử 12 Giữa Kì 1"
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="digitize-subject-select" className="block text-xs font-bold text-slate-700 mb-1">
+                        Môn học
+                      </label>
+                      <select
+                        id="digitize-subject-select"
+                        aria-label="Môn học"
+                        value={category}
+                        onChange={(e) => setCategory(e.target.value as ExamCategory)}
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                      >
+                        {LIBRARY_SUBJECTS.map((subj) => (
+                          <option key={subj} value={subj}>
+                            {subj}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="digitize-duration-input" className="block text-xs font-bold text-slate-700 mb-1">
+                        Thời gian (phút)
+                      </label>
+                      <input
+                        id="digitize-duration-input"
+                        type="number"
+                        min={1}
+                        max={300}
+                        value={durationMinutes}
+                        onChange={(e) => setDurationMinutes(Number(e.target.value))}
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 tabular-nums focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                      />
+                    </div>
+                  </div>
+
                   {activeTab === 'docx' && (
                     <div className="space-y-5">
                       <div
@@ -839,7 +923,7 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                         id="exam-title-input"
                         type="text"
                         value={title}
-                        onChange={(e) => setTitle(e.target.value)}
+                        onChange={(e) => handleTitleChangeWithAutoSubject(e.target.value)}
                         placeholder="Ví dụ: Ôn thi TN THPT Thành phố Huế - Đề số 8"
                         className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
                       />

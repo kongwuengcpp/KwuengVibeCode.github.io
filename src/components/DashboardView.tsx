@@ -316,28 +316,56 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       return true;
     });
 
+    const getStableCode = (exam: Exam) => {
+      if (exam.examCode && String(exam.examCode).trim()) {
+        return String(exam.examCode).trim();
+      }
+      let hash = 0;
+      for (let i = 0; i < exam.id.length; i++) {
+        hash = (hash * 31 + exam.id.charCodeAt(i)) >>> 0;
+      }
+      return String(10000 + (hash % 90000));
+    };
+
+    const extractIdTs = (id: string) => {
+      const m = id.match(/(\d{10,})/);
+      return m ? Number(m[1]) : 0;
+    };
+
+    const parseDateScore = (e: Exam) => {
+      const parts = (e.createdAt || '').split('/');
+      const d = /^\d+$/.test(parts[0] || '') ? parts[0].padStart(2, '0') : '01';
+      const m = /^\d+$/.test(parts[1] || '') ? parts[1].padStart(2, '0') : '01';
+      const y = /^\d{4}$/.test(parts[2] || '') ? parts[2] : '2026';
+      const tParts = (e.uploadTime || '11:00').split(':');
+      const hh = /^\d+$/.test(tParts[0] || '') ? tParts[0].padStart(2, '0') : '11';
+      const mm = /^\d+$/.test(tParts[1] || '') ? tParts[1].padStart(2, '0') : '00';
+      const score = Number(`${y}${m}${d}${hh}${mm}`);
+      return Number.isFinite(score) ? score : 0;
+    };
+
     return [...list].sort((a, b) => {
       const dir = sortOrder === 'asc' ? 1 : -1;
       if (sortField === 'id') {
-        const codeA = a.examCode || a.id;
-        const codeB = b.examCode || b.id;
-        return codeA.localeCompare(codeB) * dir;
-      }
-      if (sortField === 'category') {
+        const cmp = getStableCode(a).localeCompare(getStableCode(b));
+        if (cmp !== 0) return cmp * dir;
+      } else if (sortField === 'category') {
         const catA = normalizeSubjectCategory(a.category);
         const catB = normalizeSubjectCategory(b.category);
-        return catA.localeCompare(catB, 'vi') * dir;
+        const cmp = catA.localeCompare(catB, 'vi');
+        if (cmp !== 0) return cmp * dir;
+      } else if (sortField === 'title') {
+        const cmp = a.title.localeCompare(b.title, 'vi');
+        if (cmp !== 0) return cmp * dir;
+      } else {
+        const diff = parseDateScore(a) - parseDateScore(b);
+        if (diff !== 0) return diff * dir;
       }
-      if (sortField === 'title') {
-        return a.title.localeCompare(b.title, 'vi') * dir;
-      }
-      // Sort by upload date/time
-      const parseDateScore = (e: Exam) => {
-        const [d = '01', m = '01', y = '2026'] = (e.createdAt || '').split('/');
-        const [hh = '00', mm = '00'] = (e.uploadTime || '11:00').split(':');
-        return Number(`${y}${m.padStart(2, '0')}${d.padStart(2, '0')}${hh.padStart(2, '0')}${mm.padStart(2, '0')}`);
-      };
-      return (parseDateScore(a) - parseDateScore(b)) * dir;
+
+      // Deterministic tie-breakers so exams never jump around when cloud snapshots arrive
+      const tsDiff = extractIdTs(a.id) - extractIdTs(b.id);
+      if (tsDiff !== 0) return tsDiff * dir;
+      return a.id.localeCompare(b.id) * dir;
     });
   }, [
     exams,
@@ -1049,9 +1077,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
             ) : (
-              filteredExams.map((exam, index) => {
+              filteredExams.map((exam) => {
+                let hash = 0;
+                for (let i = 0; i < exam.id.length; i++) {
+                  hash = (hash * 31 + exam.id.charCodeAt(i)) >>> 0;
+                }
                 const displayCode =
-                  exam.examCode || String(10001 + index).slice(-5);
+                  exam.examCode || String(10000 + (hash % 90000));
                 const subj = normalizeSubjectCategory(exam.category);
                 const latestAttempt = latestAttemptByExamId[exam.id];
                 const isManuallyDone = Boolean(manualDoneMap[exam.id]);
@@ -1235,9 +1267,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </td>
                     </tr>
                   ) : (
-                    filteredExams.map((exam, index) => {
+                    filteredExams.map((exam) => {
+                      let hash = 0;
+                      for (let i = 0; i < exam.id.length; i++) {
+                        hash = (hash * 31 + exam.id.charCodeAt(i)) >>> 0;
+                      }
                       const displayCode =
-                        exam.examCode || String(10001 + index).slice(-5);
+                        exam.examCode || String(10000 + (hash % 90000));
                       const subj = normalizeSubjectCategory(exam.category);
                       const latestAttempt = latestAttemptByExamId[exam.id];
                       const isManuallyDone = Boolean(manualDoneMap[exam.id]);

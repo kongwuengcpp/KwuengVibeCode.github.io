@@ -304,9 +304,12 @@ export function parseExamText(rawText: string): ParsedExamResult {
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
 
+  const sectionPart1Regex = /^(?:PHẦN\s*(?:I|1)\b|I\.\s*TRẮC\s*NGHIỆM)/i;
+  const sectionPart2Regex = /^(?:PHẦN\s*(?:II|2)\b|II\.\s*(?:CÂU\s*HỎI\s*)?ĐÚNG\s*[\/-]?\s*SAI)/i;
+  const sectionPart3Regex = /^(?:PHẦN\s*(?:III|3)\b|III\.\s*(?:CÂU\s*HỎI\s*)?TRẢ\s*LỜI\s*NGẮN)/i;
   const questionStartRegex = /^(?:Câu\s*(?:hỏi\s*)?|Question\s*|Bài\s*)(\d+)\s*[.:)\-]?\s*(.*)$/i;
   const numberedStartRegex = /^(\d{1,3})[.)]\s+(.+)$/;
-  const optionLineRegex = /^(\*)?\s*\[?([ABCD])\]?[.)]\s*(.+)$/i;
+  const optionLineRegex = /^(\*)?\s*\[?([ABCDabcd])\]?([.)])\s*(.+)$/;
   const inlineAnswerRegex = /^(?:Đáp\s*án(?:\s*đúng)?|Chọn(?:\s*đáp\s*án)?|Trả\s*lời(?:\s*ngắn)?|Điền\s*từ|Answer)\s*[:=\-]\s*(.+)$/i;
   const explanationRegex = /^(?:Lời\s*giải|Giải\s*thích|Hướng\s*dẫn(?:\s*giải)?)\s*[:.\-]?\s*(.*)$/i;
   const imageTagRegex = /\[(?:IMAGE|ẢNH|IMG)\s*:\s*([^\]]+)\]/i;
@@ -314,6 +317,8 @@ export function parseExamText(rawText: string): ParsedExamResult {
 
   interface DraftQuestion {
     number: number;
+    sectionHint?: QuestionType;
+    hasLowercaseOption?: boolean;
     textLines: string[];
     imageUrl?: string;
     options: Partial<Record<OptionKey, string>>;
@@ -325,6 +330,7 @@ export function parseExamText(rawText: string): ParsedExamResult {
 
   const drafts: DraftQuestion[] = [];
   let current: DraftQuestion | null = null;
+  let activeSectionHint: QuestionType | undefined;
 
   const commitCurrent = () => {
     if (current) {
@@ -334,6 +340,23 @@ export function parseExamText(rawText: string): ParsedExamResult {
   };
 
   for (let rawLine of lines) {
+    // Check section header lines first (PHẦN I, PHẦN II, PHẦN III)
+    if (sectionPart2Regex.test(rawLine)) {
+      commitCurrent();
+      activeSectionHint = 'multiple';
+      continue;
+    }
+    if (sectionPart3Regex.test(rawLine)) {
+      commitCurrent();
+      activeSectionHint = 'short';
+      continue;
+    }
+    if (sectionPart1Regex.test(rawLine)) {
+      commitCurrent();
+      activeSectionHint = 'single';
+      continue;
+    }
+
     // Extract inline [IMAGE:...] marker if present on any line
     const imgMatch = rawLine.match(imageTagRegex);
     let extractedImgOnLine: string | undefined;
@@ -356,6 +379,7 @@ export function parseExamText(rawText: string): ParsedExamResult {
       const remainder = qMatch[2].trim();
       current = {
         number: qNum,
+        sectionHint: activeSectionHint,
         textLines: remainder ? [remainder] : [],
         imageUrl: extractedImgOnLine,
         options: {},
@@ -373,12 +397,17 @@ export function parseExamText(rawText: string): ParsedExamResult {
       continue;
     }
 
-    // 3. Check option line (A. / *A. / B. / C. / D.)
+    // 3. Check option line (A. / *A. / a) / *a) / B. / C. / D.)
     const optMatch = rawLine.match(optionLineRegex);
     if (optMatch && current) {
       const isStarred = Boolean(optMatch[1]);
-      const optKey = optMatch[2].toUpperCase() as OptionKey;
-      let optText = optMatch[3].trim();
+      const rawLetter = optMatch[2];
+      const delimiter = optMatch[3];
+      if (rawLetter === rawLetter.toLowerCase() && delimiter === ')') {
+        current.hasLowercaseOption = true;
+      }
+      const optKey = rawLetter.toUpperCase() as OptionKey;
+      let optText = optMatch[4].trim();
 
       if (/\(\s*đúng\s*\)$/i.test(optText)) {
         optText = optText.replace(/\(\s*đúng\s*\)$/i, '').trim();
@@ -409,6 +438,7 @@ export function parseExamText(rawText: string): ParsedExamResult {
       const remainder = numMatch[2].trim();
       current = {
         number: qNum,
+        sectionHint: activeSectionHint,
         textLines: remainder ? [remainder] : [],
         imageUrl: extractedImgOnLine,
         options: {},
@@ -492,6 +522,8 @@ export function parseExamText(rawText: string): ParsedExamResult {
       // Has options A, B, C, D -> check if multiple or single
       let resolvedMulti: OptionKey[] = [...draft.starredOptions];
       const isExplicitMulti =
+        draft.sectionHint === 'multiple' ||
+        Boolean(draft.hasLowercaseOption) ||
         /(?:Đúng\s*[\/-]\s*Sai|Nhiều\s*lựa\s*chọn|Phần\s*II)\b/i.test(rawPrompt) ||
         Boolean(
           draft.inlineAnswerRaw &&
@@ -529,7 +561,7 @@ export function parseExamText(rawText: string): ParsedExamResult {
         }
       }
 
-      if (resolvedMulti.length === 0 && keyEntry) {
+      if (resolvedMulti.length === 0 && keyEntry && !isExplicitMulti) {
         if (keyEntry.type === 'multiple' && keyEntry.multiple) {
           resolvedMulti = keyEntry.multiple;
         } else if (keyEntry.type === 'single' && keyEntry.single) {

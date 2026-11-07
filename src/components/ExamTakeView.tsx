@@ -128,7 +128,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     }
     setResultFilter('all');
     setMobilePaletteOpen(false);
-  }, [exam, initialAttempt, previewMode]);
+  }, [exam.id, initialAttempt, previewMode]);
 
   useEffect(() => {
     if (!isStarted || isSubmitted) return;

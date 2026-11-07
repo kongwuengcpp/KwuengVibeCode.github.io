@@ -57,7 +57,11 @@ service cloud.firestore {
     }
 
     function isValidExamDocument(data, examId) {
-      return data.id is string
+      return examId != 'exam-test-123'
+        && examId != 'catalog_index'
+        && data.id is string
+        && ('examCode' in data) && data.examCode is string && data.examCode.size() >= 1 && data.examCode.size() <= 32
+        && ('uploadTime' in data) && data.uploadTime is string && data.uploadTime.size() >= 1 && data.uploadTime.size() <= 32
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 300
         && data.category is string && data.category.size() >= 1 && data.category.size() <= 100
         && data.durationMinutes is number && data.durationMinutes >= 1 && data.durationMinutes <= 600
@@ -89,7 +93,7 @@ service cloud.firestore {
       allow get: if isValidId(examId);
       allow list: if true;
       allow create, update: if isValidId(examId) && isValidExamDocument(incoming(), examId);
-      allow delete: if isValidId(examId) && (isAuthenticatedAdmin() || existing().adminToken == 'wangwibu2026');
+      allow delete: if isValidId(examId) && (resource == null || isAuthenticatedAdmin() || !('adminToken' in existing()) || existing().adminToken == 'wangwibu2026');
     }
   }
 }
