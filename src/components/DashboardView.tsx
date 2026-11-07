@@ -55,7 +55,10 @@ interface DashboardViewProps {
   onToggleFavorite: (examId: string) => void;
   onDeleteExam: (examId: string) => void;
   onExportExamsJson?: () => void;
-  onImportExamsJson?: (exams: Exam[]) => void;
+  onImportExamsJson?: (exams: Exam[], importedBranding?: Partial<SiteBranding>) => void;
+  onSyncCloud?: () => Promise<void>;
+  isSyncingCloud?: boolean;
+  cloudSynced?: boolean;
 }
 
 type SortField = 'id' | 'category' | 'title' | 'date';
@@ -97,6 +100,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onDeleteExam,
   onExportExamsJson,
   onImportExamsJson,
+  onSyncCloud,
+  isSyncingCloud = false,
+  cloudSynced = false,
 }) => {
   const [filterNotDone, setFilterNotDone] = useState<boolean>(true);
   const [filterDone, setFilterDone] = useState<boolean>(true);
@@ -241,6 +247,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const parsed = JSON.parse(text);
       if (Array.isArray(parsed) && onImportExamsJson) {
         onImportExamsJson(parsed as Exam[]);
+      } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.exams) && onImportExamsJson) {
+        onImportExamsJson(parsed.exams as Exam[], parsed.branding);
       }
     } catch {
       // ignore invalid json
@@ -493,16 +501,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
 
-              {/* MỞ CÔNG CỤ TẠO ĐỀ - Only visible to Admin */}
+              {/* MỞ CÔNG CỤ TẠO ĐỀ & ĐỒNG BỘ CLOUD - Only visible to Admin */}
               {isAdmin && (
-                <button
-                  type="button"
-                  onClick={onCreateNewExam}
-                  className="mt-5 md:mt-7 w-full md:w-auto inline-flex items-center justify-center gap-2 px-4 py-3 md:py-2.5 rounded-xl border border-blue-200 bg-blue-50/40 hover:bg-blue-50 text-[#2563eb] text-xs font-bold uppercase tracking-wide transition-colors cursor-pointer"
-                >
-                  <Box className="w-4 h-4" />
-                  <span>MỞ CÔNG CỤ TẠO ĐỀ</span>
-                </button>
+                <div className="mt-5 md:mt-7 w-full flex flex-col sm:flex-row md:flex-col lg:flex-row items-stretch sm:items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={onCreateNewExam}
+                    className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-3 md:py-2.5 rounded-xl border border-blue-200 bg-blue-50/40 hover:bg-blue-50 text-[#2563eb] text-xs font-bold uppercase tracking-wide transition-colors cursor-pointer"
+                  >
+                    <Box className="w-4 h-4 shrink-0" />
+                    <span>MỞ CÔNG CỤ TẠO ĐỀ</span>
+                  </button>
+
+                  {onSyncCloud && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void onSyncCloud();
+                      }}
+                      disabled={isSyncingCloud}
+                      title="Đẩy toàn bộ đề thi và giao diện hiện tại lên Cloud để mọi máy khác đều nhìn thấy"
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-3 md:py-2.5 rounded-xl border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-100/70 text-emerald-700 text-xs font-bold uppercase tracking-wide transition-colors cursor-pointer disabled:opacity-60"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingCloud ? 'ĐANG ĐỒNG BỘ...' : 'ĐỒNG BỘ LÊN CLOUD'}</span>
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
@@ -757,11 +782,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             {isAdmin && (
               <>
+                {onSyncCloud && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void onSyncCloud();
+                    }}
+                    disabled={isSyncingCloud}
+                    title="Đồng bộ toàn bộ đề thi và giao diện lên Cloud để mọi thiết bị đều thấy"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+                    <span className="hidden sm:inline">
+                      {isSyncingCloud ? 'Đang đồng bộ...' : cloudSynced ? 'Đã đồng bộ Cloud' : 'Đồng bộ Cloud'}
+                    </span>
+                  </button>
+                )}
+
                 {onExportExamsJson && (
                   <button
                     type="button"
                     onClick={onExportExamsJson}
-                    title="Xuất file exams.json để chép vào thư mục public/ khi đẩy lên GitHub Pages"
+                    title="Xuất file exams.json (gồm cả đề thi và giao diện) để sao lưu hoặc đẩy lên GitHub"
                     className="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
                   >
                     <Download className="w-3.5 h-3.5 text-[#2563eb]" />

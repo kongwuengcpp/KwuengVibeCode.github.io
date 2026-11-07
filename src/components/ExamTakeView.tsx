@@ -37,9 +37,11 @@ import {
   formatUserAnswerLabel,
   getQuestionTrueKeys,
   gradeExam,
+  groupQuestionsIntoSections,
   isQuestionAnswered,
   isQuestionCorrect,
   isTrueFalseAnswerMap,
+  organizeQuestionsBySection,
   shouldShowInstantFeedback,
 } from '../utils/examParser';
 
@@ -72,15 +74,12 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   );
   const [activeQuestions, setActiveQuestions] = useState<Question[]>(() => {
     if (initialAttempt?.questionsSnapshot && initialAttempt.questionsSnapshot.length > 0) {
-      return initialAttempt.questionsSnapshot;
+      return organizeQuestionsBySection(initialAttempt.questionsSnapshot);
     }
-    if (exam.shuffleQuestions || exam.shuffleOptions) {
-      return createShuffledExam(exam, {
-        shuffleQuestions: Boolean(exam.shuffleQuestions),
-        shuffleOptions: Boolean(exam.shuffleOptions),
-      }).questions;
-    }
-    return exam.questions;
+    return createShuffledExam(exam, {
+      shuffleQuestions: Boolean(exam.shuffleQuestions),
+      shuffleOptions: Boolean(exam.shuffleOptions),
+    }).questions;
   });
 
   const [isStarted, setIsStarted] = useState<boolean>(!previewMode && !initialAttempt);
@@ -102,8 +101,8 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
       setConfirmedQuestions({});
       setActiveQuestions(
         initialAttempt.questionsSnapshot && initialAttempt.questionsSnapshot.length > 0
-          ? initialAttempt.questionsSnapshot
-          : exam.questions
+          ? organizeQuestionsBySection(initialAttempt.questionsSnapshot)
+          : organizeQuestionsBySection(exam.questions)
       );
       setIsSubmitted(true);
       setAttemptResult(initialAttempt);
@@ -114,12 +113,10 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
       setShuffleQuestions(initSQ);
       setShuffleOptions(initSO);
       setActiveQuestions(
-        initSQ || initSO
-          ? createShuffledExam(exam, {
-              shuffleQuestions: initSQ,
-              shuffleOptions: initSO,
-            }).questions
-          : exam.questions
+        createShuffledExam(exam, {
+          shuffleQuestions: initSQ,
+          shuffleOptions: initSO,
+        }).questions
       );
       setAnswers({});
       setConfirmedQuestions({});
@@ -313,54 +310,86 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     return true;
   });
 
-  const renderPaletteNumbers = () => (
-    <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-5 gap-1.5">
-      {activeQuestions.map((q) => {
-        const userAns = answers[q.id];
-        const hasAns = isQuestionAnswered(q, userAns);
-        const isCorr = isQuestionCorrect(q, userAns);
-        const isConf = Boolean(confirmedQuestions[q.id]);
-        const qType: QuestionType = q.type || 'single';
-        const needsConfirm = qType === 'multiple' || qType === 'short';
-        const showEval = shouldShowInstantFeedback(q, userAns, {
-          isSubmitted,
-          instantFeedback,
-          isConfirmed: isConf,
-        });
+  const renderPaletteNumbers = () => {
+    const paletteSections = groupQuestionsIntoSections(activeQuestions).filter(
+      (sec) => sec.items.length > 0
+    );
 
-        let btnClass =
-          'bg-slate-50/80 border-slate-200 text-slate-700 hover:border-[#2563eb] hover:text-[#2563eb]';
+    return (
+      <div className="space-y-3.5">
+        {paletteSections.map((sec) => {
+          const badgeColor =
+            sec.type === 'single'
+              ? 'text-[#2563eb] bg-blue-50 border-blue-200/80'
+              : sec.type === 'multiple'
+              ? 'text-indigo-700 bg-indigo-50 border-indigo-200/80'
+              : 'text-amber-800 bg-amber-50 border-amber-200/80';
 
-        if (showEval) {
-          if (isCorr) {
-            btnClass = 'bg-emerald-500 border-emerald-600 text-white font-bold';
-          } else if (hasAns) {
-            btnClass = 'bg-rose-500 border-rose-600 text-white font-bold';
-          } else {
-            btnClass = 'bg-amber-50 border-amber-300 text-amber-800';
-          }
-        } else if (hasAns) {
-          if (needsConfirm && !isConf) {
-            btnClass = 'bg-blue-50 border-blue-400 text-[#2563eb] font-bold';
-          } else {
-            btnClass = 'bg-[#2563eb] border-[#2563eb] text-white font-bold';
-          }
-        }
+          return (
+            <div key={sec.type} className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[11px] font-bold ${badgeColor}`}
+                >
+                  {sec.shortTitle}
+                </span>
+                <span className="text-[11px] text-slate-400 font-semibold tabular-nums">
+                  {sec.items.length} câu
+                </span>
+              </div>
 
-        return (
-          <button
-            key={q.id}
-            type="button"
-            onClick={() => scrollToQuestion(q.number)}
-            aria-label={`Đi tới câu ${q.number}`}
-            className={`h-9 lg:h-8 rounded-lg border text-xs font-semibold tabular-nums transition-colors cursor-pointer ${btnClass}`}
-          >
-            {q.number}
-          </button>
-        );
-      })}
-    </div>
-  );
+              <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-5 gap-1.5">
+                {sec.items.map(({ question: q }) => {
+                  const userAns = answers[q.id];
+                  const hasAns = isQuestionAnswered(q, userAns);
+                  const isCorr = isQuestionCorrect(q, userAns);
+                  const isConf = Boolean(confirmedQuestions[q.id]);
+                  const qType: QuestionType = q.type || 'single';
+                  const needsConfirm = qType === 'multiple' || qType === 'short';
+                  const showEval = shouldShowInstantFeedback(q, userAns, {
+                    isSubmitted,
+                    instantFeedback,
+                    isConfirmed: isConf,
+                  });
+
+                  let btnClass =
+                    'bg-slate-50/80 border-slate-200 text-slate-700 hover:border-[#2563eb] hover:text-[#2563eb]';
+
+                  if (showEval) {
+                    if (isCorr) {
+                      btnClass = 'bg-emerald-500 border-emerald-600 text-white font-bold';
+                    } else if (hasAns) {
+                      btnClass = 'bg-rose-500 border-rose-600 text-white font-bold';
+                    } else {
+                      btnClass = 'bg-amber-50 border-amber-300 text-amber-800';
+                    }
+                  } else if (hasAns) {
+                    if (needsConfirm && !isConf) {
+                      btnClass = 'bg-blue-50 border-blue-400 text-[#2563eb] font-bold';
+                    } else {
+                      btnClass = 'bg-[#2563eb] border-[#2563eb] text-white font-bold';
+                    }
+                  }
+
+                  return (
+                    <button
+                      key={q.id}
+                      type="button"
+                      onClick={() => scrollToQuestion(q.number)}
+                      aria-label={`Đi tới câu ${q.number}`}
+                      className={`h-9 lg:h-8 rounded-lg border text-xs font-semibold tabular-nums transition-colors cursor-pointer ${btnClass}`}
+                    >
+                      {q.number}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-[#f8fafc] text-slate-900">
@@ -741,53 +770,119 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
               </button>
             </div>
 
-            {/* Questions List */}
-            <div className="divide-y divide-slate-100 mt-1 sm:mt-2">
+            {/* Questions List Grouped into Separate Sections (Phần I, Phần II, Phần III) */}
+            <div className="mt-4 sm:mt-6 space-y-6 sm:space-y-8">
               {filteredQuestions.length === 0 ? (
                 <div className="py-10 text-center text-sm text-slate-500">
                   Không có câu hỏi nào trong bộ lọc này.
                 </div>
               ) : (
-                filteredQuestions.map((question) => {
-                  const qType: QuestionType = question.type || 'single';
-                  const userAnswer = answers[question.id];
-                  const hasAnswered = isQuestionAnswered(question, userAnswer);
-                  const isCorrect = isQuestionCorrect(question, userAnswer);
-                  const isConfirmed = Boolean(confirmedQuestions[question.id]);
-                  const showAnswerFeedback = shouldShowInstantFeedback(question, userAnswer, {
-                    isSubmitted,
-                    instantFeedback,
-                    isConfirmed,
-                  });
+                groupQuestionsIntoSections(filteredQuestions)
+                  .filter((sec) => sec.items.length > 0)
+                  .map((section) => {
+                    const sectionHeaderTheme =
+                      section.type === 'single'
+                        ? 'bg-blue-50/70 border-blue-200/80'
+                        : section.type === 'multiple'
+                        ? 'bg-indigo-50/70 border-indigo-200/80'
+                        : 'bg-amber-50/70 border-amber-200/80';
 
-                  const displayPrompt = question.text.startsWith(`Câu ${question.number}`)
-                    ? question.text
-                    : `Câu ${question.number}. ${question.text}`;
+                    const sectionBadgeTheme =
+                      section.type === 'single'
+                        ? 'bg-[#2563eb] text-white'
+                        : section.type === 'multiple'
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-amber-600 text-white';
 
-                  return (
-                    <div
-                      key={question.id}
-                      id={`question-block-${question.number}`}
-                      className="py-5 sm:py-6 scroll-mt-20"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-                        <div className="flex items-center gap-2">
-                          <span className="px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200/70 text-[#2563eb] text-xs font-extrabold">
-                            Câu {question.number}
+                    const sectionBorderTheme =
+                      section.type === 'single'
+                        ? 'border-blue-200/70'
+                        : section.type === 'multiple'
+                        ? 'border-indigo-200/70'
+                        : 'border-amber-200/70';
+
+                    return (
+                      <section
+                        key={section.type}
+                        aria-label={`${section.partLabel}. ${section.title}`}
+                        className={`rounded-2xl border ${sectionBorderTheme} bg-white overflow-hidden shadow-2xs`}
+                      >
+                        {/* Dedicated Section Header Banner */}
+                        <div
+                          className={`px-4 sm:px-6 py-3.5 sm:py-4 border-b ${sectionHeaderTheme} flex flex-wrap items-center justify-between gap-2`}
+                        >
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`px-2.5 py-0.5 rounded-lg text-xs font-extrabold tracking-wide uppercase ${sectionBadgeTheme}`}
+                              >
+                                {section.partLabel}
+                              </span>
+                              <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+                                {section.title}
+                              </h3>
+                            </div>
+                            <p className="text-xs text-slate-600">
+                              {section.description}
+                            </p>
+                          </div>
+
+                          <span className="px-3 py-1 rounded-xl bg-white/90 border border-slate-200/80 text-xs font-extrabold text-slate-700 tabular-nums shrink-0">
+                            {section.items.length} câu hỏi
                           </span>
-                          {qType === 'multiple' && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 border border-indigo-200/60 text-xs font-semibold text-indigo-700">
-                              <CheckSquare className="w-3.5 h-3.5" />
-                              <span>Trắc nghiệm Đúng/Sai</span>
-                            </span>
-                          )}
-                          {qType === 'short' && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200/60 text-xs font-semibold text-amber-700">
-                              <Type className="w-3.5 h-3.5" />
-                              <span>Điền từ / Trả lời ngắn</span>
-                            </span>
-                          )}
                         </div>
+
+                        {/* Questions inside this Section */}
+                        <div className="divide-y divide-slate-100 px-4 sm:px-6">
+                          {section.items.map(({ question, sectionNumber }) => {
+                            const qType: QuestionType = question.type || 'single';
+                            const userAnswer = answers[question.id];
+                            const hasAnswered = isQuestionAnswered(question, userAnswer);
+                            const isCorrect = isQuestionCorrect(question, userAnswer);
+                            const isConfirmed = Boolean(confirmedQuestions[question.id]);
+                            const showAnswerFeedback = shouldShowInstantFeedback(
+                              question,
+                              userAnswer,
+                              {
+                                isSubmitted,
+                                instantFeedback,
+                                isConfirmed,
+                              }
+                            );
+
+                            const cleanQuestionText = question.text.replace(
+                              /^(?:Câu\s*\d+\s*[.:)\-]\s*)/i,
+                              ''
+                            );
+                            const displayPrompt = `Câu ${question.number}. ${cleanQuestionText}`;
+
+                            return (
+                              <div
+                                key={question.id}
+                                id={`question-block-${question.number}`}
+                                className="py-5 sm:py-6 scroll-mt-20"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200/70 text-[#2563eb] text-xs font-extrabold">
+                                      Câu {question.number}
+                                    </span>
+                                    <span className="text-[11px] font-semibold text-slate-400">
+                                      ({section.partLabel} · Câu {sectionNumber})
+                                    </span>
+                                    {qType === 'multiple' && (
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 border border-indigo-200/60 text-xs font-semibold text-indigo-700">
+                                        <CheckSquare className="w-3.5 h-3.5" />
+                                        <span>Đúng / Sai</span>
+                                      </span>
+                                    )}
+                                    {qType === 'short' && (
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200/60 text-xs font-semibold text-amber-700">
+                                        <Type className="w-3.5 h-3.5" />
+                                        <span>Trả lời ngắn</span>
+                                      </span>
+                                    )}
+                                  </div>
 
                         {showAnswerFeedback && (
                           <span
@@ -1160,10 +1255,14 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                       )}
                     </div>
                   );
-                })
-              )}
-            </div>
-          </div>
+                })}
+              </div>
+            </section>
+          );
+        })
+      )}
+    </div>
+  </div>
 
           {/* Right Sticky Sidebar: Question Palette & Controls (Homepage Card Style) */}
           <aside className="w-full lg:w-[340px] shrink-0 lg:sticky lg:top-20">
@@ -1284,6 +1383,9 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                           <Shuffle className="w-3.5 h-3.5" />
                           <span>Đảo câu hỏi & đáp án ngay</span>
                         </button>
+                        <p className="text-[11px] text-slate-500 leading-snug">
+                          Câu hỏi được đảo riêng trong từng phần (Trắc nghiệm, Đúng/Sai, Trả lời ngắn), không trộn lẫn các phần.
+                        </p>
                       </div>
                     )}
                   </div>

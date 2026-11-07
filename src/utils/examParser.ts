@@ -636,31 +636,142 @@ export function shuffleQuestionOptions(
   };
 }
 
+export interface QuestionSectionMeta {
+  type: QuestionType;
+  partLabel: string;
+  title: string;
+  shortTitle: string;
+  description: string;
+}
+
+export const QUESTION_SECTIONS: QuestionSectionMeta[] = [
+  {
+    type: 'single',
+    partLabel: 'PHẦN I',
+    title: 'Trắc nghiệm nhiều phương án lựa chọn',
+    shortTitle: 'Phần I · Trắc nghiệm',
+    description: 'Mỗi câu hỏi thí sinh chỉ chọn một phương án đúng A, B, C hoặc D.',
+  },
+  {
+    type: 'multiple',
+    partLabel: 'PHẦN II',
+    title: 'Câu hỏi trắc nghiệm Đúng / Sai',
+    shortTitle: 'Phần II · Đúng / Sai',
+    description: 'Trong mỗi ý A, B, C, D ở mỗi câu, thí sinh chọn Đúng hoặc Sai.',
+  },
+  {
+    type: 'short',
+    partLabel: 'PHẦN III',
+    title: 'Câu hỏi trả lời ngắn / Điền từ',
+    shortTitle: 'Phần III · Trả lời ngắn',
+    description: 'Thí sinh điền câu trả lời ngắn hoặc kết quả vào ô trống.',
+  },
+];
+
 /**
- * Returns a new Exam with questions and/or options shuffled according to config.
+ * Organizes questions into 3 separate sections ('single', 'multiple', 'short').
+ * When `shuffleQuestions` is enabled, questions are shuffled ONLY within their own section
+ * so Trắc nghiệm, Đúng/Sai, and Trả lời ngắn are never mixed together.
+ * When `shuffleOptions` is enabled, options A, B, C, D are shuffled within each question.
+ */
+export function organizeQuestionsBySection(
+  questions: readonly Question[],
+  config: {
+    shuffleQuestions?: boolean;
+    shuffleOptions?: boolean;
+    targetSectionToShuffle?: QuestionType;
+  } = {},
+  rng: () => number = Math.random
+): Question[] {
+  const cloned = questions.map((q) => ({
+    ...q,
+    type: (q.type || 'single') as QuestionType,
+    options: { ...q.options },
+    correctAnswers: q.correctAnswers ? [...q.correctAnswers] : undefined,
+  }));
+
+  const grouped: Record<QuestionType, Question[]> = {
+    single: [],
+    multiple: [],
+    short: [],
+  };
+
+  for (const q of cloned) {
+    const qType: QuestionType = q.type || 'single';
+    grouped[qType].push(q);
+  }
+
+  const ordered: Question[] = [];
+  for (const sec of QUESTION_SECTIONS) {
+    const bucket = grouped[sec.type];
+    const shouldShuffleThisBucket =
+      Boolean(config.shuffleQuestions) &&
+      (!config.targetSectionToShuffle || config.targetSectionToShuffle === sec.type);
+    const processedBucket = shouldShuffleThisBucket
+      ? shuffleArray(bucket, rng)
+      : bucket;
+    ordered.push(...processedBucket);
+  }
+
+  return ordered.map((q, idx) => {
+    const shouldShuffleOpts =
+      Boolean(config.shuffleOptions) &&
+      (!config.targetSectionToShuffle || config.targetSectionToShuffle === (q.type || 'single'));
+    const withOptions = shouldShuffleOpts ? shuffleQuestionOptions(q, rng) : q;
+    return {
+      ...withOptions,
+      number: idx + 1,
+    };
+  });
+}
+
+/**
+ * Groups an array of questions into the 3 standard sections ('single', 'multiple', 'short')
+ * while preserving each question's global `.number` and providing 1-based `sectionIndex` within each section.
+ */
+export function groupQuestionsIntoSections(
+  questions: readonly Question[]
+): Array<
+  QuestionSectionMeta & {
+    items: Array<{ question: Question; globalIndex: number; sectionNumber: number }>;
+  }
+> {
+  return QUESTION_SECTIONS.map((meta) => {
+    const items: Array<{ question: Question; globalIndex: number; sectionNumber: number }> = [];
+    questions.forEach((q, idx) => {
+      const qType: QuestionType = q.type || 'single';
+      if (qType === meta.type) {
+        items.push({
+          question: q,
+          globalIndex: idx,
+          sectionNumber: items.length + 1,
+        });
+      }
+    });
+    return {
+      ...meta,
+      items,
+    };
+  });
+}
+
+/**
+ * Returns a new Exam with questions organized into sections ('single' -> 'multiple' -> 'short')
+ * and shuffled within each section (never mixing different question types together).
  */
 export function createShuffledExam(
   exam: Exam,
   config: { shuffleQuestions: boolean; shuffleOptions: boolean },
   rng: () => number = Math.random
 ): Exam {
-  const baseQuestions = exam.questions.map((q) => ({
-    ...q,
-    options: { ...q.options },
-    correctAnswers: q.correctAnswers ? [...q.correctAnswers] : undefined,
-  }));
-
-  const orderedQuestions = config.shuffleQuestions
-    ? shuffleArray(baseQuestions, rng)
-    : baseQuestions;
-
-  const finalQuestions = orderedQuestions.map((q, idx) => {
-    const withOptions = config.shuffleOptions ? shuffleQuestionOptions(q, rng) : q;
-    return {
-      ...withOptions,
-      number: idx + 1,
-    };
-  });
+  const finalQuestions = organizeQuestionsBySection(
+    exam.questions,
+    {
+      shuffleQuestions: config.shuffleQuestions,
+      shuffleOptions: config.shuffleOptions,
+    },
+    rng
+  );
 
   return {
     ...exam,

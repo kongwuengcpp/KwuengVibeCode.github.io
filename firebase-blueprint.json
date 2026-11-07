@@ -1,0 +1,157 @@
+{
+  "entities": {
+    "SiteConfig": {
+      "title": "SiteConfig",
+      "description": "Global site branding and configuration synchronized across all devices.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Main application title",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "Creator or subtitle label",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "version": {
+          "type": "string",
+          "description": "Displayed version badge text",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "logoUrl": {
+          "type": "string",
+          "description": "Optional custom logo URL or data URI",
+          "maxLength": 900000
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update",
+          "maxLength": 64
+        },
+        "adminToken": {
+          "type": "string",
+          "description": "Admin verification token for console-authenticated writes",
+          "maxLength": 128
+        }
+      },
+      "required": ["title", "subtitle", "version", "updatedAt", "adminToken"]
+    },
+    "ExamCatalog": {
+      "title": "ExamCatalog",
+      "description": "Index of active exam document IDs for direct get lookups without list queries.",
+      "type": "object",
+      "properties": {
+        "examIds": {
+          "type": "array",
+          "description": "Ordered array of active exam document IDs"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update",
+          "maxLength": 64
+        },
+        "adminToken": {
+          "type": "string",
+          "description": "Admin verification token",
+          "maxLength": 128
+        }
+      },
+      "required": ["examIds", "updatedAt", "adminToken"]
+    },
+    "ExamDocument": {
+      "title": "ExamDocument",
+      "description": "An exam stored in Firestore and synchronized to all students.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique exam identifier",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "examCode": {
+          "type": "string",
+          "description": "Short numeric or alphanumeric exam code",
+          "maxLength": 32
+        },
+        "title": {
+          "type": "string",
+          "description": "Exam title",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "category": {
+          "type": "string",
+          "description": "Subject category",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "durationMinutes": {
+          "type": "number",
+          "description": "Exam duration in minutes"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Formatted creation timestamp",
+          "maxLength": 64
+        },
+        "questions": {
+          "type": "array",
+          "description": "List of exam questions grouped by section"
+        },
+        "shuffleQuestions": {
+          "type": "boolean",
+          "description": "Whether questions should shuffle by default"
+        },
+        "shuffleOptions": {
+          "type": "boolean",
+          "description": "Whether options A-D should shuffle by default"
+        },
+        "isFavorite": {
+          "type": "boolean",
+          "description": "Optional favorite marker"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update",
+          "maxLength": 64
+        },
+        "adminToken": {
+          "type": "string",
+          "description": "Admin verification token for console-authenticated writes",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "category",
+        "durationMinutes",
+        "createdAt",
+        "questions",
+        "updatedAt",
+        "adminToken"
+      ]
+    }
+  },
+  "firestore": {
+    "/settings/{configId}": {
+      "schema": { "$ref": "#/entities/SiteConfig" },
+      "description": "Stores global site branding under /settings/site_config"
+    },
+    "/catalog/{catalogId}": {
+      "schema": { "$ref": "#/entities/ExamCatalog" },
+      "description": "Stores active exam IDs under /catalog/main"
+    },
+    "/exams/{examId}": {
+      "schema": { "$ref": "#/entities/ExamDocument" },
+      "description": "Stores shared exams accessible via direct document get"
+    }
+  }
+}

@@ -1,0 +1,147 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net: Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Reusable Hardened Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAuthenticatedAdmin() {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'quangxmiku@gmail.com';
+    }
+
+    function hasValidAdminToken(data) {
+      return data.adminToken is string
+        && data.adminToken.size() >= 4
+        && data.adminToken.size() <= 128
+        && data.adminToken == 'wangwibu2026';
+    }
+
+    function isValidSiteConfig(data) {
+      return data.keys().hasAll(['title', 'subtitle', 'version', 'updatedAt', 'adminToken'])
+        && data.keys().hasOnly(['title', 'subtitle', 'version', 'logoUrl', 'updatedAt', 'adminToken'])
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.subtitle is string && data.subtitle.size() >= 1 && data.subtitle.size() <= 200
+        && data.version is string && data.version.size() >= 1 && data.version.size() <= 100
+        && (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 900000))
+        && data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 64
+        && (hasValidAdminToken(data) || isAuthenticatedAdmin());
+    }
+
+    function isValidExamCatalog(data) {
+      return data.keys().hasAll(['examIds', 'updatedAt', 'adminToken'])
+        && data.keys().hasOnly(['examIds', 'updatedAt', 'adminToken'])
+        && data.examIds is list && data.examIds.size() <= 500
+        && (data.examIds.size() == 0 || (data.examIds[0] is string && data.examIds[0].size() <= 128))
+        && data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 64
+        && (hasValidAdminToken(data) || isAuthenticatedAdmin());
+    }
+
+    function isValidExamDocument(data, examId) {
+      return data.keys().hasAll([
+          'id',
+          'title',
+          'category',
+          'durationMinutes',
+          'createdAt',
+          'questions',
+          'updatedAt',
+          'adminToken'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'examCode',
+          'title',
+          'category',
+          'durationMinutes',
+          'createdAt',
+          'questions',
+          'shuffleQuestions',
+          'shuffleOptions',
+          'isFavorite',
+          'updatedAt',
+          'adminToken'
+        ])
+        && data.id is string && data.id == examId && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$')
+        && (!('examCode' in data) || (data.examCode is string && data.examCode.size() <= 32))
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 300
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 100
+        && data.durationMinutes is number && data.durationMinutes >= 1 && data.durationMinutes <= 600
+        && data.createdAt is string && data.createdAt.size() >= 1 && data.createdAt.size() <= 64
+        && data.questions is list && data.questions.size() <= 500
+        && (data.questions.size() == 0 || data.questions[0] is map)
+        && (!('shuffleQuestions' in data) || data.shuffleQuestions is bool)
+        && (!('shuffleOptions' in data) || data.shuffleOptions is bool)
+        && (!('isFavorite' in data) || data.isFavorite is bool)
+        && data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 64
+        && (hasValidAdminToken(data) || isAuthenticatedAdmin());
+    }
+
+    // Connection test endpoint
+    match /test/{docId} {
+      allow get: if isValidId(docId);
+    }
+
+    // Global Site Branding & Settings (/settings/site_config)
+    match /settings/{configId} {
+      allow get: if isValidId(configId);
+      allow create: if isValidId(configId) && isValidSiteConfig(incoming());
+      allow update: if isValidId(configId) && isValidSiteConfig(incoming()) && (
+        isAuthenticatedAdmin() ||
+        (hasValidAdminToken(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'subtitle', 'version', 'logoUrl', 'updatedAt', 'adminToken']))
+      );
+    }
+
+    // Active Exam IDs Catalog (/catalog/main)
+    match /catalog/{catalogId} {
+      allow get: if isValidId(catalogId);
+      allow create: if isValidId(catalogId) && isValidExamCatalog(incoming());
+      allow update: if isValidId(catalogId) && isValidExamCatalog(incoming()) && (
+        isAuthenticatedAdmin() ||
+        (hasValidAdminToken(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['examIds', 'updatedAt', 'adminToken']))
+      );
+    }
+
+    // Shared Exams Collection (/exams/{examId})
+    match /exams/{examId} {
+      allow get: if isValidId(examId);
+      allow create: if isValidId(examId) && isValidExamDocument(incoming(), examId);
+      allow update: if isValidId(examId) && isValidExamDocument(incoming(), examId) && incoming().id == existing().id && (
+        isAuthenticatedAdmin() ||
+        (hasValidAdminToken(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly([
+          'examCode',
+          'title',
+          'category',
+          'durationMinutes',
+          'createdAt',
+          'questions',
+          'shuffleQuestions',
+          'shuffleOptions',
+          'isFavorite',
+          'updatedAt',
+          'adminToken'
+        ]))
+      );
+      allow delete: if isValidId(examId) && (isAuthenticatedAdmin() || existing().adminToken == 'wangwibu2026');
+    }
+  }
+}

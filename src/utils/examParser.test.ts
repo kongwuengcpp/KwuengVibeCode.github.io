@@ -7,6 +7,8 @@ import {
   isQuestionCorrect,
   shuffleQuestionOptions,
   createShuffledExam,
+  organizeQuestionsBySection,
+  groupQuestionsIntoSections,
   shouldShowInstantFeedback,
 } from './examParser';
 import { Exam } from '../types/exam';
@@ -209,19 +211,19 @@ test('verifies console admin key accurately', () => {
   assert.equal(extractAnswerKeyMap('BẢNG ĐÁP ÁN\n1.A 2.B')[2], 'B');
 });
 
-test('shuffles questions and options while preserving correct answers for single and multiple choice', () => {
+test('shuffles questions and options within each section without mixing unrelated sections', () => {
   const sampleExam: Exam = {
     id: 'exam-shuffle',
-    title: 'Đề kiểm tra đảo câu hỏi & đáp án',
+    title: 'Đề kiểm tra đảo câu hỏi & đáp án theo từng phần',
     category: 'Lớp 12',
     durationMinutes: 45,
     createdAt: '06/11/2026',
     questions: [
       {
-        id: 'q1',
+        id: 'q1-single',
         number: 1,
         type: 'single',
-        text: 'Câu 1',
+        text: 'Câu 1 Trắc nghiệm',
         options: {
           A: 'Đáp án đúng duy nhất',
           B: 'Đáp án sai 1',
@@ -231,7 +233,7 @@ test('shuffles questions and options while preserving correct answers for single
         correctAnswer: 'A',
       },
       {
-        id: 'q2',
+        id: 'q2-multi',
         number: 2,
         type: 'multiple',
         text: 'Câu 2 Đúng/Sai',
@@ -245,7 +247,7 @@ test('shuffles questions and options while preserving correct answers for single
         correctAnswers: ['A', 'D'],
       },
       {
-        id: 'q3',
+        id: 'q3-short',
         number: 3,
         type: 'short',
         text: 'Câu 3 Điền từ',
@@ -253,14 +255,39 @@ test('shuffles questions and options while preserving correct answers for single
         correctAnswer: 'A',
         shortAnswer: '1945',
       },
+      {
+        id: 'q4-single',
+        number: 4,
+        type: 'single',
+        text: 'Câu 4 Trắc nghiệm',
+        options: { A: '1', B: '2', C: '3', D: '4' },
+        correctAnswer: 'B',
+      },
+      {
+        id: 'q5-multi',
+        number: 5,
+        type: 'multiple',
+        text: 'Câu 5 Đúng/Sai',
+        options: { A: 'Ý 1', B: 'Ý 2', C: 'Ý 3', D: 'Ý 4' },
+        correctAnswer: 'A',
+        correctAnswers: ['B'],
+      },
+      {
+        id: 'q6-short',
+        number: 6,
+        type: 'short',
+        text: 'Câu 6 Điền từ',
+        options: { A: '', B: '', C: '', D: '' },
+        correctAnswer: 'A',
+        shortAnswer: '1975',
+      },
     ],
   };
 
-  // Deterministic RNG that reverses elements (always returns 0)
+  // Deterministic RNG that reverses 2-element arrays (always returns 0)
   const deterministicRng = () => 0;
 
   const shuffledSingle = shuffleQuestionOptions(sampleExam.questions[0], deterministicRng);
-  // Find which option key now holds 'Đáp án đúng duy nhất'
   assert.equal(
     shuffledSingle.options[shuffledSingle.correctAnswer],
     'Đáp án đúng duy nhất'
@@ -279,13 +306,36 @@ test('shuffles questions and options while preserving correct answers for single
     { shuffleQuestions: true, shuffleOptions: true },
     deterministicRng
   );
-  assert.equal(fullShuffled.questions.length, 3);
+  assert.equal(fullShuffled.questions.length, 6);
   assert.deepEqual(
     fullShuffled.questions.map((q) => q.number),
-    [1, 2, 3]
+    [1, 2, 3, 4, 5, 6]
   );
-  // With rng = () => 0, Fisher-Yates shifts [q1, q2, q3] -> [q2, q3, q1]
-  assert.equal(fullShuffled.questions[0].id, 'q2');
+  // Questions are grouped by section (single -> multiple -> short) and shuffled ONLY within each section
+  assert.deepEqual(
+    fullShuffled.questions.map((q) => q.id),
+    ['q4-single', 'q1-single', 'q5-multi', 'q2-multi', 'q6-short', 'q3-short']
+  );
+
+  const grouped = groupQuestionsIntoSections(
+    organizeQuestionsBySection(sampleExam.questions, {
+      shuffleQuestions: false,
+      shuffleOptions: false,
+    })
+  );
+  assert.equal(grouped.length, 3);
+  assert.deepEqual(
+    grouped[0].items.map((item) => item.question.id),
+    ['q1-single', 'q4-single']
+  );
+  assert.deepEqual(
+    grouped[1].items.map((item) => item.question.id),
+    ['q2-multi', 'q5-multi']
+  );
+  assert.deepEqual(
+    grouped[2].items.map((item) => item.question.id),
+    ['q3-short', 'q6-short']
+  );
 });
 
 test('shouldShowInstantFeedback requires confirmation for multiple-choice and short-answer before revealing answers', () => {

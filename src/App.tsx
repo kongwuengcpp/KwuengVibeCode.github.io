@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ShieldOff, ArrowLeft } from 'lucide-react';
 import { Exam, ExamAttempt, SiteBranding, DEFAULT_SITE_BRANDING } from './types/exam';
 import { INITIAL_ATTEMPTS, INITIAL_EXAMS } from './data/initialExams';
@@ -12,6 +12,14 @@ import {
   resolveAppRoute,
   verifyAdminKey,
 } from './utils/accessControl';
+import {
+  subscribeToSiteBranding,
+  saveSiteBrandingToCloud,
+  subscribeToCloudExams,
+  saveExamToCloud,
+  deleteExamFromCloud,
+  syncAllToCloud,
+} from './firebase';
 
 const EXAMS_STORAGE_KEY = 'luyende_online_exams_prod_v1';
 const ATTEMPTS_STORAGE_KEY = 'luyende_online_attempts_prod_v1';
@@ -29,6 +37,7 @@ declare global {
     logoutAdmin?: () => string;
     setAdminKey?: (newKey: string) => string;
     setBranding?: (branding: Partial<SiteBranding>) => string;
+    syncCloud?: () => Promise<string>;
     ADMIN_KEY?: string;
   }
 }
@@ -96,6 +105,10 @@ export default function App() {
   const [reviewingAttempt, setReviewingAttempt] = useState<ExamAttempt | null>(null);
   const [editingExam, setEditingExam] = useState<Exam | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
+  const [cloudSynced, setCloudSynced] = useState<boolean>(false);
+  const hasAutoMigratedLocalRef = useRef<boolean>(false);
+
   const [branding, setBranding] = useState<SiteBranding>(() => {
     try {
       const saved = localStorage.getItem(BRANDING_STORAGE_KEY);
@@ -119,8 +132,93 @@ export default function App() {
       } catch {
         // ignore
       }
+      void saveSiteBrandingToCloud(updated).then(() => {
+        setCloudSynced(true);
+      });
       return updated;
     });
+  }, []);
+
+  const handleSyncCloud = useCallback(async () => {
+    setIsSyncingCloud(true);
+    try {
+      await syncAllToCloud(exams, branding);
+      setCloudSynced(true);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  }, [exams, branding]);
+
+  // Real-time Firestore listener for Site Branding (/settings/site_config)
+  useEffect(() => {
+    const unsubscribe = subscribeToSiteBranding((cloudBranding) => {
+      if (cloudBranding) {
+        setBranding(cloudBranding);
+        setCloudSynced(true);
+        try {
+          localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(cloudBranding));
+        } catch {
+          // ignore
+        }
+      } else {
+        // Cloud has no branding document yet — if this browser has custom localStorage branding, push it up automatically
+        try {
+          const localSaved = localStorage.getItem(BRANDING_STORAGE_KEY);
+          if (localSaved) {
+            const parsed = JSON.parse(localSaved);
+            if (parsed && typeof parsed === 'object') {
+              void saveSiteBrandingToCloud({ ...DEFAULT_SITE_BRANDING, ...parsed }).then(() => {
+                setCloudSynced(true);
+              });
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Real-time Firestore listener for Shared Exams (/exams/catalog_index + /exams/{examId})
+  const brandingRef = useRef<SiteBranding>(branding);
+  useEffect(() => {
+    brandingRef.current = branding;
+  }, [branding]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToCloudExams((cloudExams, catalogExists) => {
+      setCloudSynced(true);
+      if (cloudExams.length > 0) {
+        setExams((localPrev) => {
+          // If this browser had local exams not yet on cloud, push them once
+          if (!hasAutoMigratedLocalRef.current && localPrev.length > 0) {
+            hasAutoMigratedLocalRef.current = true;
+            const cloudIds = new Set(cloudExams.map((e) => e.id));
+            const unsyncedLocal = localPrev.filter((e) => e && e.id && !cloudIds.has(e.id));
+            if (unsyncedLocal.length > 0) {
+              const merged = [...cloudExams, ...unsyncedLocal];
+              void syncAllToCloud(merged, brandingRef.current);
+              return merged;
+            }
+          }
+          return cloudExams;
+        });
+      } else if (!catalogExists) {
+        // Cloud catalog doesn't exist yet — if this browser has local exams, auto-upload them once!
+        setExams((localPrev) => {
+          if (!hasAutoMigratedLocalRef.current && localPrev.length > 0) {
+            hasAutoMigratedLocalRef.current = true;
+            void syncAllToCloud(localPrev, brandingRef.current);
+            return localPrev;
+          }
+          return [];
+        });
+      } else {
+        setExams([]);
+      }
+    });
+    return () => unsubscribe();
   }, []);
 
   // Sync document title with branding
@@ -130,13 +228,30 @@ export default function App() {
     }
   }, [branding]);
 
-  // Load static ./exams.json if deployed on GitHub Pages (public/exams.json)
+  // Load static ./exams.json if deployed on GitHub Pages (public/exams.json) as fallback
   useEffect(() => {
     let cancelled = false;
     fetch('./exams.json', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
-      .then((remoteExams) => {
-        if (cancelled || !Array.isArray(remoteExams) || remoteExams.length === 0) {
+      .then((remotePayload) => {
+        if (cancelled || !remotePayload) {
+          return;
+        }
+        const remoteExams: Exam[] = Array.isArray(remotePayload)
+          ? remotePayload
+          : Array.isArray(remotePayload.exams)
+          ? remotePayload.exams
+          : [];
+
+        if (
+          !Array.isArray(remotePayload) &&
+          remotePayload.branding &&
+          typeof remotePayload.branding === 'object'
+        ) {
+          setBranding((prev) => ({ ...prev, ...remotePayload.branding }));
+        }
+
+        if (remoteExams.length === 0) {
           return;
         }
         setExams((prev) => {
@@ -209,8 +324,11 @@ export default function App() {
           // ignore
         }
         setIsAdmin(true);
+        void syncAllToCloud(exams, branding).then(() => {
+          setCloudSynced(true);
+        });
         const msg =
-          '✅ Đăng nhập Admin thành công! Quyền tạo đề, số hoá Word (.docx) và chỉnh sửa đã được mở khoá.';
+          '✅ Đăng nhập Admin thành công! Quyền tạo đề, số hoá Word (.docx), chỉnh sửa và đồng bộ Cloud đã được mở khoá.';
         console.info(`%c${msg}`, 'color: #22c55e; font-weight: bold; font-size: 13px;');
         return msg;
       }
@@ -251,7 +369,12 @@ export default function App() {
         return '❌ Bạn cần đăng nhập Admin trước khi đổi thông tin trang (tiêu đề, tên tác giả, phiên bản, logo).';
       }
       handleUpdateBranding(newBranding);
-      return `✅ Đã cập nhật thông tin trang thành công!`;
+      return `✅ Đã cập nhật và đồng bộ thông tin trang lên Cloud thành công!`;
+    };
+
+    window.syncCloud = async () => {
+      await handleSyncCloud();
+      return '✅ Đã đồng bộ toàn bộ đề thi và giao diện lên Cloud thành công!';
     };
 
     try {
@@ -273,7 +396,7 @@ export default function App() {
       'color: #22c55e; font-weight: bold; font-size: 13px;',
       'color: #94a3b8; font-size: 12px;'
     );
-  }, [isAdmin]);
+  }, [isAdmin, exams, branding, handleUpdateBranding, handleSyncCloud]);
 
   useEffect(() => {
     try {
@@ -394,6 +517,9 @@ export default function App() {
 
     setExams(updatedExams);
     setEditingExam(null);
+    void saveExamToCloud(savedExam, updatedExams).then(() => {
+      setCloudSynced(true);
+    });
 
     const base = getBasePathname();
     if (startImmediately) {
@@ -412,17 +538,32 @@ export default function App() {
 
   const handleToggleFavorite = (examId: string) => {
     setExams((prev) =>
-      prev.map((e) => (e.id === examId ? { ...e, isFavorite: !e.isFavorite } : e))
+      prev.map((e) => {
+        if (e.id === examId) {
+          const updated = { ...e, isFavorite: !e.isFavorite };
+          if (isAdmin) {
+            void saveExamToCloud(updated);
+          }
+          return updated;
+        }
+        return e;
+      })
     );
   };
 
   const handleDeleteExam = (examId: string) => {
     if (!isAdmin) return;
-    setExams((prev) => prev.filter((e) => e.id !== examId));
+    const remaining = exams.filter((e) => e.id !== examId);
+    setExams(remaining);
+    void deleteExamFromCloud(examId, remaining);
   };
 
   const handleExportExamsJson = () => {
-    const jsonString = JSON.stringify(exams, null, 2);
+    const exportPayload = {
+      branding,
+      exams,
+    };
+    const jsonString = JSON.stringify(exportPayload, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -434,8 +575,18 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleImportExamsJson = (importedExams: Exam[]) => {
+  const handleImportExamsJson = (
+    importedExams: Exam[],
+    importedBranding?: Partial<SiteBranding>
+  ) => {
     if (!isAdmin || !Array.isArray(importedExams)) return;
+    const nextBranding =
+      importedBranding && typeof importedBranding === 'object'
+        ? { ...branding, ...importedBranding }
+        : branding;
+    if (importedBranding && typeof importedBranding === 'object') {
+      handleUpdateBranding(importedBranding);
+    }
     setExams((prev) => {
       const map = new Map<string, Exam>();
       for (const e of prev) {
@@ -446,7 +597,9 @@ export default function App() {
           map.set(item.id, item);
         }
       }
-      return Array.from(map.values());
+      const merged = Array.from(map.values());
+      void syncAllToCloud(merged, nextBranding);
+      return merged;
     });
   };
 
@@ -507,6 +660,9 @@ export default function App() {
             onDeleteExam={handleDeleteExam}
             onExportExamsJson={handleExportExamsJson}
             onImportExamsJson={handleImportExamsJson}
+            onSyncCloud={handleSyncCloud}
+            isSyncingCloud={isSyncingCloud}
+            cloudSynced={cloudSynced}
           />
         )}
 
@@ -538,3 +694,4 @@ export default function App() {
     </div>
   );
 }
+

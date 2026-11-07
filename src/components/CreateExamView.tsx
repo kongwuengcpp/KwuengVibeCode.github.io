@@ -28,9 +28,9 @@ import {
 } from '../types/exam';
 import {
   getQuestionTrueKeys,
+  groupQuestionsIntoSections,
+  organizeQuestionsBySection,
   parseExamText,
-  shuffleArray,
-  shuffleQuestionOptions,
 } from '../utils/examParser';
 import { extractTextFromDocxBuffer } from '../utils/docxHelper';
 
@@ -120,12 +120,7 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
   );
   const [questions, setQuestions] = useState<Question[]>(
     editingExam
-      ? editingExam.questions.map((q) => ({
-          ...q,
-          type: q.type || 'single',
-          options: { ...q.options },
-          correctAnswers: q.correctAnswers ? [...q.correctAnswers] : undefined,
-        }))
+      ? organizeQuestionsBySection(editingExam.questions)
       : [
           {
             id: `q-init-1`,
@@ -210,7 +205,7 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
       return;
     }
 
-    setQuestions(result.questions);
+    setQuestions(organizeQuestionsBySection(result.questions));
     setDigitizeWarnings(result.warnings);
     if (!title.trim()) {
       setTitle(
@@ -221,34 +216,36 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
     }
     setMode('manual');
     setDigitizeNotice(
-      `Đã trích xuất thành công ${result.questions.length} câu hỏi (${result.detectedAnswerKeyCount} đáp án đúng được nhận diện tự động). Bạn có thể rà soát lại bên dưới và nhấn Lưu đề thi.`
+      `Đã trích xuất và phân tách thành công ${result.questions.length} câu hỏi vào từng phần (Trắc nghiệm, Đúng/Sai, Trả lời ngắn). Bạn có thể rà soát lại bên dưới và nhấn Lưu đề thi.`
     );
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleAddQuestion = (qType: QuestionType = 'single') => {
     const nextNum = questions.length + 1;
-    setQuestions((prev) => [
-      ...prev,
-      {
-        id: `q-${Date.now()}-${nextNum}`,
-        number: nextNum,
-        type: qType,
-        text: '',
-        options: { A: '', B: '', C: '', D: '' },
-        correctAnswer: 'A',
-        correctAnswers: qType === 'multiple' ? ['A'] : undefined,
-        shortAnswer: qType === 'short' ? '' : undefined,
-        explanation: '',
-      },
-    ]);
+    setQuestions((prev) =>
+      organizeQuestionsBySection([
+        ...prev,
+        {
+          id: `q-${Date.now()}-${nextNum}`,
+          number: nextNum,
+          type: qType,
+          text: '',
+          options: { A: '', B: '', C: '', D: '' },
+          correctAnswer: 'A',
+          correctAnswers: qType === 'multiple' ? ['A'] : undefined,
+          shortAnswer: qType === 'short' ? '' : undefined,
+          explanation: '',
+        },
+      ])
+    );
   };
 
   const handleRemoveQuestion = (index: number) => {
     if (questions.length <= 1) return;
-    const next = questions
-      .filter((_, idx) => idx !== index)
-      .map((q, idx) => ({ ...q, number: idx + 1 }));
+    const next = organizeQuestionsBySection(
+      questions.filter((_, idx) => idx !== index)
+    );
     setQuestions(next);
   };
 
@@ -292,18 +289,27 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
     });
   };
 
-  const handleShuffleQuestionsInEditor = () => {
+  const handleShuffleQuestionsInEditor = (targetSection?: QuestionType) => {
     setQuestions((prev) =>
-      shuffleArray(prev).map((q, idx) => ({
-        ...q,
-        number: idx + 1,
-      }))
+      organizeQuestionsBySection(prev, {
+        shuffleQuestions: true,
+        targetSectionToShuffle: targetSection,
+      })
     );
-    setDigitizeNotice('Đã xáo trộn thứ tự các câu hỏi trong đề thi.');
+    setDigitizeNotice(
+      targetSection
+        ? 'Đã đảo vị trí câu hỏi trong phần đã chọn (không trộn lẫn sang phần khác).'
+        : 'Đã đảo vị trí câu hỏi riêng biệt trong từng phần (Trắc nghiệm, Đúng/Sai, Trả lời ngắn).'
+    );
   };
 
-  const handleShuffleOptionsInEditor = () => {
-    setQuestions((prev) => prev.map((q) => shuffleQuestionOptions(q)));
+  const handleShuffleOptionsInEditor = (targetSection?: QuestionType) => {
+    setQuestions((prev) =>
+      organizeQuestionsBySection(prev, {
+        shuffleOptions: true,
+        targetSectionToShuffle: targetSection,
+      })
+    );
     setDigitizeNotice(
       'Đã xáo trộn vị trí các đáp án A, B, C, D và tự động cập nhật đáp án đúng tương ứng.'
     );
@@ -340,6 +346,7 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
       now.getMinutes()
     ).padStart(2, '0')}`;
 
+    const organizedForSave = organizeQuestionsBySection(questions);
     const newExam: Exam = {
       id: editingExam ? editingExam.id : `exam-${Date.now()}`,
       examCode:
@@ -355,7 +362,7 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
       shuffleOptions,
       sourceType: selectedFileName.endsWith('.docx') ? 'docx' : 'manual',
       fileName: selectedFileName || editingExam?.fileName,
-      questions: questions.map((q, idx) => {
+      questions: organizedForSave.map((q, idx) => {
         const qType: QuestionType = q.type || 'single';
         return {
           ...q,
@@ -900,16 +907,16 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        onClick={handleShuffleQuestionsInEditor}
+                        onClick={() => handleShuffleQuestionsInEditor()}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-semibold text-slate-700 transition-colors cursor-pointer"
                       >
                         <Shuffle className="w-3.5 h-3.5 text-[#2563eb]" />
-                        <span>Đảo vị trí câu hỏi ngay</span>
+                        <span>Đảo vị trí câu hỏi ngay (theo từng phần)</span>
                       </button>
 
                       <button
                         type="button"
-                        onClick={handleShuffleOptionsInEditor}
+                        onClick={() => handleShuffleOptionsInEditor()}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-semibold text-slate-700 transition-colors cursor-pointer"
                       >
                         <Shuffle className="w-3.5 h-3.5 text-indigo-600" />
@@ -919,48 +926,157 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                   </div>
                 </div>
 
-                {/* Questions Editor List */}
-                <div className="space-y-4">
-                  {questions.map((q, index) => {
-                    const qType: QuestionType = q.type || 'single';
-                    const multiCorrectList = getQuestionTrueKeys(q);
+                {/* Questions Editor Grouped into 3 Separate Sections */}
+                <div className="space-y-6">
+                  {groupQuestionsIntoSections(questions).map((section) => {
+                    const secHeaderStyle =
+                      section.type === 'single'
+                        ? 'bg-blue-50/70 border-blue-200/80'
+                        : section.type === 'multiple'
+                        ? 'bg-indigo-50/70 border-indigo-200/80'
+                        : 'bg-amber-50/70 border-amber-200/80';
+
+                    const secBadgeStyle =
+                      section.type === 'single'
+                        ? 'bg-[#2563eb] text-white'
+                        : section.type === 'multiple'
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-amber-600 text-white';
+
+                    const secBorderStyle =
+                      section.type === 'single'
+                        ? 'border-blue-200/80'
+                        : section.type === 'multiple'
+                        ? 'border-indigo-200/80'
+                        : 'border-amber-200/80';
+
+                    const addBtnLabel =
+                      section.type === 'single'
+                        ? 'Thêm câu Trắc nghiệm'
+                        : section.type === 'multiple'
+                        ? 'Thêm câu Đúng/Sai'
+                        : 'Thêm câu Trả lời ngắn';
 
                     return (
                       <div
-                        key={q.id}
-                        className="rounded-2xl border border-slate-200/90 p-4 sm:p-5 space-y-3.5 bg-white hover:border-slate-300 transition-colors"
+                        key={section.type}
+                        className={`rounded-2xl border ${secBorderStyle} bg-slate-50/30 overflow-hidden`}
                       >
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="flex flex-wrap items-center gap-3">
-                            <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-100 text-slate-800 text-xs font-extrabold">
-                              Câu {index + 1}
-                            </span>
+                        {/* Section Header */}
+                        <div
+                          className={`px-4 sm:px-5 py-3.5 border-b ${secHeaderStyle} flex flex-wrap items-center justify-between gap-3`}
+                        >
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`px-2.5 py-0.5 rounded-lg text-xs font-extrabold uppercase tracking-wide ${secBadgeStyle}`}
+                              >
+                                {section.partLabel}
+                              </span>
+                              <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+                                {section.title}
+                              </h3>
+                              <span className="px-2.5 py-0.5 rounded-lg bg-white border border-slate-200/80 text-xs font-bold text-slate-700 tabular-nums">
+                                {section.items.length} câu
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600 mt-0.5">
+                              {section.description}
+                            </p>
+                          </div>
 
-                            {/* Question Type Selector */}
-                            <select
-                              aria-label={`Loại câu hỏi ${index + 1}`}
-                              value={qType}
-                              onChange={(e) => {
-                                const nextType = e.target.value as QuestionType;
-                                handleUpdateQuestion(index, (old) => ({
-                                  ...old,
-                                  type: nextType,
-                                  correctAnswers:
-                                    nextType === 'multiple'
-                                      ? Array.isArray(old.correctAnswers)
-                                        ? old.correctAnswers
-                                        : [old.correctAnswer]
-                                      : undefined,
-                                  shortAnswer:
-                                    nextType === 'short' ? old.shortAnswer || '' : undefined,
-                                }));
-                              }}
-                              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                          <div className="flex flex-wrap items-center gap-2">
+                            {section.items.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleShuffleQuestionsInEditor(section.type)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer transition-colors"
+                              >
+                                <Shuffle className="w-3.5 h-3.5 text-[#2563eb]" />
+                                <span>Đảo câu phần này</span>
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleAddQuestion(section.type)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-slate-50 border border-slate-300 text-xs font-bold text-slate-800 cursor-pointer transition-colors shadow-2xs"
                             >
-                              <option value="single">Trắc nghiệm (1 lựa chọn)</option>
-                              <option value="multiple">Nhiều lựa chọn (Câu hỏi Đúng/Sai)</option>
-                              <option value="short">Điền từ (Trả lời ngắn)</option>
-                            </select>
+                              <Plus className="w-3.5 h-3.5 text-[#2563eb]" />
+                              <span>{addBtnLabel}</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Section Body */}
+                        <div className="p-3.5 sm:p-5 space-y-4">
+                          {section.items.length === 0 ? (
+                            <div className="rounded-xl border border-dashed border-slate-300 bg-white py-6 px-4 text-center space-y-2">
+                              <p className="text-xs text-slate-500">
+                                Chưa có câu hỏi nào trong {section.partLabel} ({section.title}).
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => handleAddQuestion(section.type)}
+                                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#2563eb] text-xs font-bold cursor-pointer transition-colors"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                <span>{addBtnLabel}</span>
+                              </button>
+                            </div>
+                          ) : (
+                            section.items.map(({ question: q, globalIndex: index, sectionNumber }) => {
+                              const qType: QuestionType = q.type || 'single';
+                              const multiCorrectList = getQuestionTrueKeys(q);
+
+                              return (
+                                <div
+                                  key={q.id}
+                                  className="rounded-2xl border border-slate-200/90 p-4 sm:p-5 space-y-3.5 bg-white hover:border-slate-300 transition-colors"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div className="flex flex-wrap items-center gap-2.5">
+                                      <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-100 text-slate-800 text-xs font-extrabold">
+                                        Câu {index + 1}
+                                      </span>
+                                      <span className="text-[11px] font-semibold text-slate-400">
+                                        ({section.partLabel} · Câu {sectionNumber})
+                                      </span>
+
+                                      {/* Question Type Selector */}
+                                      <select
+                                        aria-label={`Loại câu hỏi ${index + 1}`}
+                                        value={qType}
+                                        onChange={(e) => {
+                                          const nextType = e.target.value as QuestionType;
+                                          setQuestions((prev) =>
+                                            organizeQuestionsBySection(
+                                              prev.map((item, idx) =>
+                                                idx === index
+                                                  ? {
+                                                      ...item,
+                                                      type: nextType,
+                                                      correctAnswers:
+                                                        nextType === 'multiple'
+                                                          ? Array.isArray(item.correctAnswers)
+                                                            ? item.correctAnswers
+                                                            : [item.correctAnswer]
+                                                          : undefined,
+                                                      shortAnswer:
+                                                        nextType === 'short'
+                                                          ? item.shortAnswer || ''
+                                                          : undefined,
+                                                    }
+                                                  : item
+                                              )
+                                            )
+                                          );
+                                        }}
+                                        className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                                      >
+                                        <option value="single">Trắc nghiệm (1 lựa chọn)</option>
+                                        <option value="multiple">Nhiều lựa chọn (Câu hỏi Đúng/Sai)</option>
+                                        <option value="short">Điền từ (Trả lời ngắn)</option>
+                                      </select>
 
                             {/* Image Upload Trigger */}
                             <label className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer transition-colors">
@@ -1268,8 +1384,13 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                         </div>
                       </div>
                     );
-                  })}
-                </div>
+                  })
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
                   <div className="flex flex-wrap items-center gap-2">
