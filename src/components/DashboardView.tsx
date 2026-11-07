@@ -59,6 +59,7 @@ interface DashboardViewProps {
   onSyncCloud?: () => Promise<void>;
   isSyncingCloud?: boolean;
   cloudSynced?: boolean;
+  syncFeedbackMessage?: string | null;
 }
 
 type SortField = 'id' | 'category' | 'title' | 'date';
@@ -103,6 +104,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onSyncCloud,
   isSyncingCloud = false,
   cloudSynced = false,
+  syncFeedbackMessage,
 }) => {
   const [filterNotDone, setFilterNotDone] = useState<boolean>(true);
   const [filterDone, setFilterDone] = useState<boolean>(true);
@@ -527,6 +529,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <span>{isSyncingCloud ? 'ĐANG ĐỒNG BỘ...' : 'ĐỒNG BỘ LÊN CLOUD'}</span>
                     </button>
                   )}
+                </div>
+              )}
+
+              {isAdmin && syncFeedbackMessage && (
+                <div className="mt-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-900 text-white shadow-lg animate-fade-in flex items-center justify-between gap-2">
+                  <span>{syncFeedbackMessage}</span>
                 </div>
               )}
             </div>

@@ -141,13 +141,26 @@ export default function App() {
     });
   }, []);
 
+  const [syncFeedbackMessage, setSyncFeedbackMessage] = useState<string | null>(null);
+
   const handleSyncCloud = useCallback(async () => {
     setIsSyncingCloud(true);
+    setSyncFeedbackMessage(null);
     try {
-      await syncAllToCloud(exams, branding);
-      setCloudSynced(true);
+      const res = await syncAllToCloud(exams, branding);
+      if (res.success) {
+        setCloudSynced(true);
+        setSyncFeedbackMessage(`✅ Đã đồng bộ thành công ${res.count} đề thi và giao diện lên Cloud!`);
+      } else {
+        setSyncFeedbackMessage(`⚠️ Lỗi đồng bộ: ${res.error || 'Vui lòng kiểm tra lại'}`);
+      }
+    } catch (err) {
+      setSyncFeedbackMessage(`❌ Lỗi: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsSyncingCloud(false);
+      window.setTimeout(() => {
+        setSyncFeedbackMessage((prev) => (prev ? prev : null));
+      }, 5000);
     }
   }, [exams, branding]);
 
@@ -646,6 +659,7 @@ export default function App() {
             onSyncCloud={handleSyncCloud}
             isSyncingCloud={isSyncingCloud}
             cloudSynced={cloudSynced}
+            syncFeedbackMessage={syncFeedbackMessage}
           />
         )}
 

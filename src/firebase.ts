@@ -249,16 +249,39 @@ export async function deleteExamFromCloud(examId: string): Promise<void> {
   }
 }
 
-export async function syncAllToCloud(exams: Exam[], branding: SiteBranding): Promise<void> {
-  await saveSiteBrandingToCloud(branding);
+export async function syncAllToCloud(
+  exams: Exam[],
+  branding: SiteBranding
+): Promise<{ success: boolean; count: number; error?: string }> {
+  let successCount = 0;
+  let lastError = '';
+
+  try {
+    await saveSiteBrandingToCloud(branding);
+  } catch (err) {
+    lastError = err instanceof Error ? err.message : String(err);
+  }
+
   for (const exam of exams) {
     if (!exam || !exam.id || exam.id === 'catalog_index') continue;
     const { id, payload } = sanitizeExamPayload(exam);
     const path = `exams/${id}`;
     try {
       await setDoc(doc(db, 'exams', id), payload);
+      successCount++;
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
+      lastError = error instanceof Error ? error.message : String(error);
+      try {
+        handleFirestoreError(error, OperationType.WRITE, path);
+      } catch {
+        // Logged via handleFirestoreError
+      }
     }
   }
+
+  return {
+    success: successCount > 0 || !lastError,
+    count: successCount,
+    error: lastError || undefined,
+  };
 }
