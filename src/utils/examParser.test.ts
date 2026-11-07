@@ -10,9 +10,15 @@ import {
   organizeQuestionsBySection,
   groupQuestionsIntoSections,
   shouldShowInstantFeedback,
+  parseRawTableText,
+  transposeTableData,
 } from './examParser';
 import { Exam } from '../types/exam';
-import { generateSampleDocxArrayBuffer, extractTextFromDocxBuffer } from './docxHelper';
+import {
+  generateSampleDocxArrayBuffer,
+  extractTextFromDocxBuffer,
+  parseWordDocumentXmlWithAnswerHighlights,
+} from './docxHelper';
 import { resolveAppRoute, verifyAdminKey } from './accessControl';
 
 test('parses standard Vietnamese multiple choice questions with starred correct answers', () => {
@@ -500,6 +506,86 @@ D. Ý sai 4 (Sai)
   assert.deepEqual(parsed.questions[2].correctAnswers, []);
 });
 
+test('parses Markdown pipe tables, Excel TSV tables, and Word <w:tbl> blocks into question.tableData', () => {
+  const rawWithTable = `
+Câu 1: Cho bảng số liệu sau:
+Bảng 1.1: Tốc độ tăng trưởng GDP của một số quốc gia giai đoạn 2020 - 2022
+(Đơn vị: %)
+| Quốc gia | 2020 | 2021 | 2022 |
+| --- | --- | --- | --- |
+| Việt Nam | 2,9 | 2,6 | 8,0 |
+| Singapore | -3,9 | 8,9 | 3,6 |
+(Nguồn: Niên giám thống kê ASEAN 2023)
+Nhận xét nào sau đây đúng với bảng số liệu trên?
+*A. Tốc độ tăng trưởng GDP của Việt Nam năm 2022 cao nhất.
+B. Singapore tăng trưởng liên tục qua các năm.
+C. Việt Nam có tốc độ tăng trưởng âm năm 2020.
+D. Năm 2021 Việt Nam tăng nhanh hơn Singapore.
+  `;
 
+  const parsed = parseExamText(rawWithTable);
+  assert.equal(parsed.questions.length, 1);
+  const q1 = parsed.questions[0];
+  assert.equal(q1.correctAnswer, 'A');
+  assert.ok(q1.tableData);
+  assert.equal(
+    q1.tableData.title,
+    'Bảng 1.1: Tốc độ tăng trưởng GDP của một số quốc gia giai đoạn 2020 - 2022'
+  );
+  assert.equal(q1.tableData.unit, '%');
+  assert.equal(q1.tableData.sourceNote, 'Nguồn: Niên giám thống kê ASEAN 2023');
+  assert.deepEqual(q1.tableData.headers, ['Quốc gia', '2020', '2021', '2022']);
+  assert.deepEqual(q1.tableData.rows, [
+    ['Việt Nam', '2,9', '2,6', '8,0'],
+    ['Singapore', '-3,9', '8,9', '3,6'],
+  ]);
 
+  // Transpose tableData rows <-> columns
+  const transposed = transposeTableData(q1.tableData);
+  assert.deepEqual(transposed.headers, ['Quốc gia', 'Việt Nam', 'Singapore']);
+  assert.deepEqual(transposed.rows, [
+    ['2020', '2,9', '-3,9'],
+    ['2021', '2,6', '8,9'],
+    ['2022', '8,0', '3,6'],
+  ]);
 
+  // Excel TSV paste parsing
+  const excelTsv = `Năm\t2020\t2021\nSản lượng\t120\t145`;
+  const parsedTsv = parseRawTableText(excelTsv);
+  assert.ok(parsedTsv);
+  assert.deepEqual(parsedTsv.headers, ['Năm', '2020', '2021']);
+  assert.deepEqual(parsedTsv.rows, [['Sản lượng', '120', '145']]);
+
+  // Word <w:tbl> extraction converts data table into [TABLE_START]...[TABLE_END]
+  const wordXmlWithDataTable = `
+    <w:body>
+      <w:p><w:r><w:t>Câu 1: Dựa vào bảng số liệu sau:</w:t></w:r></w:p>
+      <w:tbl>
+        <w:tr>
+          <w:tc><w:p><w:r><w:t>Năm</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>2021</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>2022</w:t></w:r></w:p></w:tc>
+        </w:tr>
+        <w:tr>
+          <w:tc><w:p><w:r><w:t>Dân số (triệu người)</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>98,5</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>99,5</w:t></w:r></w:p></w:tc>
+        </w:tr>
+      </w:tbl>
+      <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>A. Tăng 1 triệu người.</w:t></w:r></w:p>
+      <w:p><w:r><w:t>B. Giảm 1 triệu người.</w:t></w:r></w:p>
+      <w:p><w:r><w:t>C. Không đổi.</w:t></w:r></w:p>
+      <w:p><w:r><w:t>D. Tăng 5 triệu người.</w:t></w:r></w:p>
+    </w:body>
+  `;
+  const extractedWordText = parseWordDocumentXmlWithAnswerHighlights(wordXmlWithDataTable, {});
+  assert.equal(extractedWordText.includes('[TABLE_START]'), true);
+  const parsedFromWord = parseExamText(extractedWordText);
+  assert.equal(parsedFromWord.questions.length, 1);
+  assert.ok(parsedFromWord.questions[0].tableData);
+  assert.deepEqual(parsedFromWord.questions[0].tableData.headers, ['Năm', '2021', '2022']);
+  assert.deepEqual(parsedFromWord.questions[0].tableData.rows, [
+    ['Dân số (triệu người)', '98,5', '99,5'],
+  ]);
+  assert.equal(parsedFromWord.questions[0].correctAnswer, 'A');
+});

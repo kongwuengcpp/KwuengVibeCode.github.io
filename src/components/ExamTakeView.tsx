@@ -44,6 +44,7 @@ import {
   organizeQuestionsBySection,
   shouldShowInstantFeedback,
 } from '../utils/examParser';
+import { QuestionDataTable } from './QuestionDataTable';
 
 interface ExamTakeViewProps {
   exam: Exam;
@@ -945,6 +946,13 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                               <span>Nhấn vào ảnh để phóng to</span>
                             </button>
                           </div>
+                        </div>
+                      )}
+
+                      {/* Question Data Table (Bảng số liệu, if present) */}
+                      {question.tableData && (
+                        <div className="mb-4">
+                          <QuestionDataTable tableData={question.tableData} />
                         </div>
                       )}
 

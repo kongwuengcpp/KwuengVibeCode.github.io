@@ -4,6 +4,7 @@ import {
   OPTION_KEYS,
   OptionKey,
   Question,
+  QuestionTableData,
   QuestionType,
   TrueFalseAnswerMap,
   UserAnswerValue,
@@ -268,6 +269,153 @@ export function extractRichAnswerKeyMap(rawText: string): Record<number, RawAnsw
 }
 
 /**
+ * Checks whether a single line looks like a Markdown separator row (e.g. `| --- | :---: | ---: |`).
+ */
+function isMarkdownTableSeparatorLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.includes('-')) return false;
+  const stripped = trimmed.replace(/^\||\|$/g, '').trim();
+  if (!stripped) return false;
+  const cells = stripped.split('|').map((c) => c.trim());
+  return cells.length >= 2 && cells.every((c) => /^:?-{2,}:?$/.test(c));
+}
+
+/**
+ * Checks whether a single line is a pipe-delimited table row (e.g. `| Năm | 2020 | 2021 |` or `Năm | 2020 | 2021`).
+ */
+export function isPipeTableRowLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.includes('|')) return false;
+  if (/^(?:Câu\s*\d+|Đáp\s*án|Lời\s*giải)/i.test(trimmed) && (trimmed.match(/\|/g) || []).length < 2) {
+    return false;
+  }
+  const pipeCount = (trimmed.match(/\|/g) || []).length;
+  return pipeCount >= 2;
+}
+
+/**
+ * Parses raw text representing a data table (Markdown pipe table, Excel/Word tab-separated table,
+ * or semicolon-separated rows) into a structured `QuestionTableData`.
+ */
+export function parseRawTableText(
+  rawText: string,
+  metaOverride?: Partial<Pick<QuestionTableData, 'title' | 'unit' | 'sourceNote'>>
+): QuestionTableData | null {
+  if (!rawText || !rawText.trim()) return null;
+
+  const rawLines = rawText
+    .replace(/\[TABLE_START\]|\[TABLE_END\]/gi, '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  let title = metaOverride?.title;
+  let unit = metaOverride?.unit;
+  let sourceNote = metaOverride?.sourceNote;
+
+  const gridRows: string[][] = [];
+
+  for (const line of rawLines) {
+    if (isMarkdownTableSeparatorLine(line)) continue;
+
+    // Detect standalone title / unit / source lines if they don't contain table delimiters
+    const hasPipes = (line.match(/\|/g) || []).length >= 2;
+    const hasTabs = line.includes('\t');
+
+    if (!hasPipes && !hasTabs) {
+      if (/^\(?\s*Đơn\s*vị(?:\s*tính)?\s*[:=-]/i.test(line)) {
+        unit = line.replace(/^\(|\)$/g, '').trim();
+        continue;
+      }
+      if (/^\(?\s*Nguồn\s*[:=-]/i.test(line)) {
+        sourceNote = line.replace(/^\(|\)$/g, '').trim();
+        continue;
+      }
+      if (gridRows.length === 0 && /^(?:Bảng(?:\s*số\s*liệu)?|Biểu\s*đồ)\b/i.test(line)) {
+        title = line.trim();
+        continue;
+      }
+    }
+
+    let cells: string[] = [];
+    if (line.includes('|')) {
+      const stripped = line.replace(/^\||\|$/g, '');
+      cells = stripped.split('|').map((c) => c.trim());
+    } else if (line.includes('\t')) {
+      cells = line.split('\t').map((c) => c.trim());
+    } else if ((line.match(/;/g) || []).length >= 2) {
+      cells = line.split(';').map((c) => c.trim());
+    } else if (/\s{2,}/.test(line)) {
+      cells = line.split(/\s{2,}/).map((c) => c.trim());
+    }
+
+    if (cells.length >= 2 || (gridRows.length > 0 && cells.length >= 1)) {
+      gridRows.push(cells);
+    }
+  }
+
+  if (gridRows.length === 0) return null;
+
+  const maxCols = Math.max(...gridRows.map((r) => r.length), 2);
+  const padded = gridRows.map((r) =>
+    Array.from({ length: maxCols }, (_, idx) => r[idx] ?? '')
+  );
+
+  const headers = padded[0];
+  const rows = padded.slice(1);
+
+  return {
+    title,
+    unit,
+    headers,
+    rows,
+    sourceNote,
+  };
+}
+
+/**
+ * Formats a `QuestionTableData` object into clean Markdown pipe syntax.
+ */
+export function formatTableToMarkdown(tableData: QuestionTableData): string {
+  const lines: string[] = [];
+  if (tableData.title) lines.push(tableData.title);
+  if (tableData.unit) lines.push(`(${tableData.unit})`);
+  if (tableData.headers.length > 0) {
+    lines.push(`| ${tableData.headers.join(' | ')} |`);
+    lines.push(`| ${tableData.headers.map(() => '---').join(' | ')} |`);
+  }
+  for (const row of tableData.rows) {
+    lines.push(`| ${row.join(' | ')} |`);
+  }
+  if (tableData.sourceNote) lines.push(`(${tableData.sourceNote})`);
+  return lines.join('\n');
+}
+
+/**
+ * Transposes (swaps rows and columns) of a `QuestionTableData`.
+ */
+export function transposeTableData(tableData: QuestionTableData): QuestionTableData {
+  const allMatrix: string[][] = [
+    tableData.headers,
+    ...tableData.rows,
+  ].filter((r) => r.length > 0);
+  if (allMatrix.length === 0) return tableData;
+
+  const rowCount = allMatrix.length;
+  const colCount = Math.max(...allMatrix.map((r) => r.length), 1);
+
+  const transposed: string[][] = Array.from({ length: colCount }, (_, cIdx) =>
+    Array.from({ length: rowCount }, (__, rIdx) => allMatrix[rIdx]?.[cIdx] ?? '')
+  );
+
+  return {
+    ...tableData,
+    headers: transposed[0] || [],
+    rows: transposed.slice(1),
+  };
+}
+
+/**
  * Splits a block of text containing inline options (e.g. "A. opt1   B. opt2   C. opt3   D. opt4")
  * into discrete lines so each option is processed cleanly.
  */
@@ -283,6 +431,7 @@ function normalizeInlineOptions(text: string): string {
  * - Single-choice ('single')
  * - Multiple-choice / True-False ('multiple', when 2+ options are starred *A, *C or Đáp án: A, C)
  * - Short-answer / Fill-in-the-blank ('short', when no A/B/C/D options exist and Đáp án: <text> is provided)
+ * - Data tables ('tableData') via `[TABLE_START]...[TABLE_END]`, Markdown pipe tables `| ... |`, or Tab-separated rows
  * - Embedded images via `[IMAGE:<url_or_data_uri>]` or `Hình ảnh: <url>`
  */
 export function parseExamText(rawText: string): ParsedExamResult {
@@ -314,6 +463,9 @@ export function parseExamText(rawText: string): ParsedExamResult {
   const explanationRegex = /^(?:Lời\s*giải|Giải\s*thích|Hướng\s*dẫn(?:\s*giải)?)\s*[:.\-]?\s*(.*)$/i;
   const imageTagRegex = /\[(?:IMAGE|ẢNH|IMG)\s*:\s*([^\]]+)\]/i;
   const imageLineRegex = /^(?:Hình\s*ảnh|Ảnh\s*minh\s*hoạ|Image)\s*[:=]\s*(\S+)$/i;
+  const tableTitleLineRegex = /^(?:Bảng(?:\s*số\s*liệu)?(?:\s*[\d.]+)?)\s*[:.\-]\s*(.+)$/i;
+  const tableUnitLineRegex = /^\(?\s*Đơn\s*vị(?:\s*tính)?\s*[:=\-]\s*([^)]+)\)?$/i;
+  const tableSourceLineRegex = /^\(?\s*(Nguồn\s*[:=\-]\s*[^)]+)\)?$/i;
 
   interface DraftQuestion {
     number: number;
@@ -321,6 +473,10 @@ export function parseExamText(rawText: string): ParsedExamResult {
     hasLowercaseOption?: boolean;
     textLines: string[];
     imageUrl?: string;
+    tableLines: string[];
+    tableTitle?: string;
+    tableUnit?: string;
+    tableSource?: string;
     options: Partial<Record<OptionKey, string>>;
     starredOptions: OptionKey[];
     inlineAnswerRaw?: string;
@@ -332,6 +488,12 @@ export function parseExamText(rawText: string): ParsedExamResult {
   let current: DraftQuestion | null = null;
   let activeSectionHint: QuestionType | undefined;
 
+  let inExplicitTableBlock = false;
+  let pendingTableLines: string[] = [];
+  let pendingTableTitle: string | undefined;
+  let pendingTableUnit: string | undefined;
+  let pendingTableSource: string | undefined;
+
   const commitCurrent = () => {
     if (current) {
       drafts.push(current);
@@ -340,6 +502,25 @@ export function parseExamText(rawText: string): ParsedExamResult {
   };
 
   for (let rawLine of lines) {
+    // Handle explicit [TABLE_START] / [TABLE_END] markers from .docx or pasted text
+    if (/^\[(?:TABLE_START|BẢNG_BẮT_ĐẦU|TABLE)\]$/i.test(rawLine)) {
+      inExplicitTableBlock = true;
+      continue;
+    }
+    if (/^\[(?:TABLE_END|BẢNG_KẾT_THÚC|\/TABLE)\]$/i.test(rawLine)) {
+      inExplicitTableBlock = false;
+      continue;
+    }
+
+    if (inExplicitTableBlock) {
+      if (current) {
+        current.tableLines.push(rawLine);
+      } else {
+        pendingTableLines.push(rawLine);
+      }
+      continue;
+    }
+
     // Check section header lines first (PHẦN I, PHẦN II, PHẦN III)
     if (sectionPart2Regex.test(rawLine)) {
       commitCurrent();
@@ -371,6 +552,44 @@ export function parseExamText(rawText: string): ParsedExamResult {
     }
     if (!rawLine) continue;
 
+    // Detect pipe-delimited Markdown table rows or tab-delimited data rows
+    const isTabRow =
+      rawLine.includes('\t') &&
+      rawLine.split('\t').filter((c) => c.trim().length > 0).length >= 2 &&
+      !optionLineRegex.test(rawLine) &&
+      !questionStartRegex.test(rawLine);
+
+    if (isPipeTableRowLine(rawLine) || isMarkdownTableSeparatorLine(rawLine) || isTabRow) {
+      if (current) {
+        current.tableLines.push(rawLine);
+      } else {
+        pendingTableLines.push(rawLine);
+      }
+      continue;
+    }
+
+    // Detect table metadata lines (Đơn vị: ..., Nguồn: ..., Bảng số liệu: ...)
+    const unitMatch = rawLine.match(tableUnitLineRegex);
+    if (unitMatch) {
+      if (current) current.tableUnit = unitMatch[1].trim();
+      else pendingTableUnit = unitMatch[1].trim();
+      continue;
+    }
+
+    const sourceMatch = rawLine.match(tableSourceLineRegex);
+    if (sourceMatch && ((current && current.tableLines.length > 0) || pendingTableLines.length > 0)) {
+      if (current) current.tableSource = sourceMatch[1].trim();
+      else pendingTableSource = sourceMatch[1].trim();
+      continue;
+    }
+
+    const titleMatch = rawLine.match(tableTitleLineRegex);
+    if (titleMatch && (!current || Object.keys(current.options).length === 0)) {
+      if (current) current.tableTitle = rawLine.trim();
+      else pendingTableTitle = rawLine.trim();
+      continue;
+    }
+
     // 1. Check explicit "Câu X:" start
     const qMatch = rawLine.match(questionStartRegex);
     if (qMatch) {
@@ -382,11 +601,19 @@ export function parseExamText(rawText: string): ParsedExamResult {
         sectionHint: activeSectionHint,
         textLines: remainder ? [remainder] : [],
         imageUrl: extractedImgOnLine,
+        tableLines: [...pendingTableLines],
+        tableTitle: pendingTableTitle,
+        tableUnit: pendingTableUnit,
+        tableSource: pendingTableSource,
         options: {},
         starredOptions: [],
         explanationLines: [],
         currentField: 'text',
       };
+      pendingTableLines = [];
+      pendingTableTitle = undefined;
+      pendingTableUnit = undefined;
+      pendingTableSource = undefined;
       continue;
     }
 
@@ -441,11 +668,19 @@ export function parseExamText(rawText: string): ParsedExamResult {
         sectionHint: activeSectionHint,
         textLines: remainder ? [remainder] : [],
         imageUrl: extractedImgOnLine,
+        tableLines: [...pendingTableLines],
+        tableTitle: pendingTableTitle,
+        tableUnit: pendingTableUnit,
+        tableSource: pendingTableSource,
         options: {},
         starredOptions: [],
         explanationLines: [],
         currentField: 'text',
       };
+      pendingTableLines = [];
+      pendingTableTitle = undefined;
+      pendingTableUnit = undefined;
+      pendingTableSource = undefined;
       continue;
     }
 
@@ -598,12 +833,22 @@ export function parseExamText(rawText: string): ParsedExamResult {
       D: draft.options.D || 'Phương án D',
     };
 
+    const parsedTableData =
+      draft.tableLines.length > 0
+        ? parseRawTableText(draft.tableLines.join('\n'), {
+            title: draft.tableTitle,
+            unit: draft.tableUnit,
+            sourceNote: draft.tableSource,
+          }) || undefined
+        : undefined;
+
     questions.push({
       id: `q-${Date.now()}-${idx + 1}`,
       number: idx + 1,
       type: qType,
       text: cleanedPrompt,
       imageUrl: draft.imageUrl,
+      tableData: parsedTableData,
       options,
       correctAnswer,
       correctAnswers,
@@ -743,7 +988,19 @@ export function organizeQuestionsBySection(
   const cloned = questions.map((q) => ({
     ...q,
     type: (q.type || 'single') as QuestionType,
-    options: { ...q.options },
+    options: {
+      A: q.options?.A ?? '',
+      B: q.options?.B ?? '',
+      C: q.options?.C ?? '',
+      D: q.options?.D ?? '',
+    },
+    tableData: q.tableData
+      ? {
+          ...q.tableData,
+          headers: [...(q.tableData.headers || [])],
+          rows: (q.tableData.rows || []).map((r) => (Array.isArray(r) ? [...r] : [])),
+        }
+      : undefined,
     correctAnswers: q.correctAnswers ? [...q.correctAnswers] : undefined,
   }));
 

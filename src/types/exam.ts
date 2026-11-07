@@ -4,12 +4,21 @@ export const OPTION_KEYS: OptionKey[] = ['A', 'B', 'C', 'D'];
 
 export type QuestionType = 'single' | 'multiple' | 'short';
 
+export interface QuestionTableData {
+  title?: string; // Ví dụ: "Bảng 1. Tốc độ tăng trưởng GDP giai đoạn 2020 - 2023"
+  unit?: string; // Ví dụ: "Đơn vị: %"
+  headers: string[]; // Cột tiêu đề: ["Năm", "2020", "2021", "2022", "2023"]
+  rows: string[][]; // Các dòng số liệu: [["Việt Nam", "2,9", "2,6", "8,0", "5,05"]]
+  sourceNote?: string; // Ví dụ: "Nguồn: Tổng cục Thống kê"
+}
+
 export interface Question {
   id: string;
   number: number;
   type?: QuestionType; // default 'single'
   text: string;
   imageUrl?: string; // Base64 data URL or image link
+  tableData?: QuestionTableData; // Bảng số liệu đi kèm câu hỏi
   options: Record<OptionKey, string>;
   correctAnswer: OptionKey; // Used when type === 'single'
   /**

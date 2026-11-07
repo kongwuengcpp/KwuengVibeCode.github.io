@@ -32,7 +32,11 @@ import {
   organizeQuestionsBySection,
   parseExamText,
 } from '../utils/examParser';
-import { extractTextFromDocxBuffer } from '../utils/docxHelper';
+import {
+  compressImageDataUriIfNeeded,
+  extractTextFromDocxBuffer,
+} from '../utils/docxHelper';
+import { QuestionTableEditor } from './QuestionDataTable';
 
 interface AutoResizeTextareaProps
   extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
@@ -295,11 +299,12 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
 
   const handleImageFileUpload = (index: number, file: File) => {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       if (typeof reader.result === 'string') {
+        const compressed = await compressImageDataUriIfNeeded(reader.result);
         handleUpdateQuestion(index, (old) => ({
           ...old,
-          imageUrl: reader.result as string,
+          imageUrl: compressed,
         }));
       }
     };
@@ -403,13 +408,14 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
           ...q,
           number: idx + 1,
           type: qType,
-          text: q.text.trim(),
+          text: (q.text || '').trim(),
           imageUrl: q.imageUrl?.trim() || undefined,
+          tableData: q.tableData,
           options: {
-            A: q.options.A.trim() || (qType === 'short' ? '' : 'Phương án A'),
-            B: q.options.B.trim() || (qType === 'short' ? '' : 'Phương án B'),
-            C: q.options.C.trim() || (qType === 'short' ? '' : 'Phương án C'),
-            D: q.options.D.trim() || (qType === 'short' ? '' : 'Phương án D'),
+            A: (q.options?.A || '').trim() || (qType === 'short' ? '' : 'Phương án A'),
+            B: (q.options?.B || '').trim() || (qType === 'short' ? '' : 'Phương án B'),
+            C: (q.options?.C || '').trim() || (qType === 'short' ? '' : 'Phương án C'),
+            D: (q.options?.D || '').trim() || (qType === 'short' ? '' : 'Phương án D'),
           },
           correctAnswers:
             qType === 'multiple' ? getQuestionTrueKeys(q) : undefined,
@@ -451,19 +457,18 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                 <button
                   type="button"
                   onClick={() => handleFinalSave(false)}
-                  className="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer whitespace-nowrap"
                 >
-                  <Save className="w-3.5 h-3.5 text-slate-600" />
+                  <Save className="w-3.5 h-3.5" />
                   <span>Lưu đề thi</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleFinalSave(true)}
-                  className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer whitespace-nowrap"
+                  className="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
                 >
-                  <Play className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Lưu & Làm bài ngay</span>
-                  <span className="sm:hidden">Lưu đề</span>
+                  <Play className="w-3.5 h-3.5 text-[#2563eb]" />
+                  <span>Lưu & Làm bài ngay</span>
                 </button>
               </>
             )}
@@ -1305,6 +1310,19 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                             />
                           </div>
                         )}
+
+                        {/* Data Table (Bảng số liệu) Editor */}
+                        <div>
+                          <QuestionTableEditor
+                            tableData={q.tableData}
+                            onChange={(nextTable) =>
+                              handleUpdateQuestion(index, (old) => ({
+                                ...old,
+                                tableData: nextTable,
+                              }))
+                            }
+                          />
+                        </div>
 
                         {/* Auto-Expanding Options for Single-Choice */}
                         {qType === 'single' && (

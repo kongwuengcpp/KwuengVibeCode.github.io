@@ -24,86 +24,103 @@ export const SAMPLE_QUESTION_DIAGRAM_DATA_URI =
     </svg>`
   );
 
-/* -------------------------------------------------------------------------- */
-/*  Image budget                                                              */
-/* -------------------------------------------------------------------------- */
-
 /**
- * Firestore giới hạn 1 MiB cho một document, và cả đề thi (chữ + ảnh) nằm trong
- * một document. Vì vậy toàn bộ ảnh của một file Word chỉ được dùng một ngân sách
- * cố định, phần còn lại dành cho nội dung câu hỏi.
- * (firebase.ts nên chặn ở khoảng 950 KB cho cả document.)
+ * Compresses a large base64 image data URI in the browser using an offscreen canvas
+ * so exam documents stay well within Firestore's 1 MiB document size limit.
  */
-export const MAX_IMAGE_SIDE = 1280; // px, cạnh dài tối đa
-export const MAX_SINGLE_IMAGE_BYTES = 180_000; // trần cho 1 ảnh (độ dài chuỗi data URI)
-export const MAX_TOTAL_IMAGE_BYTES = 650_000; // trần cho tất cả ảnh của 1 đề
-const MIN_IMAGE_BUDGET_BYTES = 30_000; // ngân sách tối thiểu chia cho mỗi ảnh
+export async function compressImageDataUriIfNeeded(
+  dataUri: string,
+  maxWidth = 840,
+  quality = 0.78
+): Promise<string> {
+  if (
+    typeof window === 'undefined' ||
+    typeof document === 'undefined' ||
+    !dataUri.startsWith('data:image/') ||
+    dataUri.startsWith('data:image/svg') ||
+    dataUri.length < 45000
+  ) {
+    return dataUri;
+  }
 
-// Các mức nén thử lần lượt cho tới khi ảnh nằm trong ngân sách
-const COMPRESS_STEPS: ReadonlyArray<{ side: number; quality: number }> = [
-  { side: MAX_IMAGE_SIDE, quality: 0.72 },
-  { side: 1024, quality: 0.6 },
-  { side: 800, quality: 0.5 },
-  { side: 600, quality: 0.45 },
-  { side: 480, quality: 0.4 },
-];
-
-const RASTER_MIME_BY_EXT: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  bmp: 'image/bmp',
-};
-
-export interface DocxExtractResult {
-  /** Văn bản đã trích xuất, ảnh nằm trong các dòng [IMAGE:...] */
-  text: string;
-  /** Số ảnh đã đưa vào đề */
-  imageCount: number;
-  /** Số ảnh bị bỏ qua (định dạng không hỗ trợ, quá nặng, lỗi giải mã...) */
-  skippedImages: number;
-  /** Cảnh báo để hiển thị cho người dùng */
-  warnings: string[];
+  return new Promise<string>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        let w = img.naturalWidth || img.width || 600;
+        let h = img.naturalHeight || img.height || 400;
+        if (w > maxWidth) {
+          h = Math.round((h * maxWidth) / w);
+          w = maxWidth;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(dataUri);
+          return;
+        }
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        const compressed = canvas.toDataURL('image/jpeg', quality);
+        resolve(compressed.length < dataUri.length ? compressed : dataUri);
+      } catch {
+        resolve(dataUri);
+      }
+    };
+    img.onerror = () => resolve(dataUri);
+    img.src = dataUri;
+  });
 }
 
 /**
- * Giữ nguyên chữ ký cũ để các nơi đang gọi không phải sửa.
- * Muốn có số ảnh và cảnh báo thì dùng extractDocxWithReport.
+ * Extracts text, data tables (<w:tbl>), and embedded images from a .docx ArrayBuffer,
+ * preserving underlined/bold/highlighted/red option markers by prefixing them with '*'
+ * so the exam parser detects single and multiple correct answers automatically.
  */
 export async function extractTextFromDocxBuffer(arrayBuffer: ArrayBuffer): Promise<string> {
-  const result = await extractDocxWithReport(arrayBuffer);
-  return result.text;
-}
-
-/**
- * Extracts text and embedded images from a .docx ArrayBuffer, preserving underlined/bold/highlighted/red
- * option markers by prefixing them with '*' so the exam parser detects single and multiple correct answers automatically.
- *
- * Ảnh: chỉ nạp những ảnh thật sự được document.xml tham chiếu, đọc quan hệ không phụ thuộc
- * thứ tự thuộc tính, và nén theo ngân sách dung lượng chung.
- */
-export async function extractDocxWithReport(arrayBuffer: ArrayBuffer): Promise<DocxExtractResult> {
-  const warnings: string[] = [];
-
   try {
     const zip = await JSZip.loadAsync(arrayBuffer);
     const docXmlFile = zip.file('word/document.xml');
     if (docXmlFile) {
       const xmlText = await docXmlFile.async('string');
 
-      const referencedIds = collectReferencedImageRelIds(xmlText);
-      const imageResult = await buildImageDataUriMap(zip, referencedIds, warnings);
+      // Build relationship map rId -> base64 data URI for any embedded images in word/media/*
+      const relIdToDataUri: Record<string, string> = {};
+      const relsFile = zip.file('word/_rels/document.xml.rels');
+      if (relsFile) {
+        const relsXml = await relsFile.async('string');
+        const relRegex = /<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"[^>]*\/?>/gi;
+        let relMatch: RegExpExecArray | null;
+        while ((relMatch = relRegex.exec(relsXml)) !== null) {
+          const rId = relMatch[1];
+          const target = relMatch[2].replace(/^\/+/, '');
+          const mediaPath = target.startsWith('word/') ? target : `word/${target}`;
+          const mediaFile = zip.file(mediaPath);
+          if (mediaFile) {
+            const base64 = await mediaFile.async('base64');
+            const ext = mediaPath.split('.').pop()?.toLowerCase() || 'png';
+            const mime =
+              ext === 'jpg' || ext === 'jpeg'
+                ? 'image/jpeg'
+                : ext === 'svg'
+                ? 'image/svg+xml'
+                : ext === 'gif'
+                ? 'image/gif'
+                : ext === 'webp'
+                ? 'image/webp'
+                : 'image/png';
+            const rawUri = `data:${mime};base64,${base64}`;
+            relIdToDataUri[rId] = await compressImageDataUriIfNeeded(rawUri);
+          }
+        }
+      }
 
-      const parsedFromXml = parseWordDocumentXmlWithAnswerHighlights(xmlText, imageResult.map);
+      const parsedFromXml = parseWordDocumentXmlWithAnswerHighlights(xmlText, relIdToDataUri);
       if (parsedFromXml.trim().length > 0) {
-        return {
-          text: parsedFromXml,
-          imageCount: imageResult.loaded,
-          skippedImages: imageResult.skipped,
-          warnings,
-        };
+        return parsedFromXml;
       }
     }
   } catch {
@@ -111,324 +128,89 @@ export async function extractDocxWithReport(arrayBuffer: ArrayBuffer): Promise<D
   }
 
   const rawResult = await mammoth.extractRawText({ arrayBuffer });
-  warnings.push('Không đọc được cấu trúc file Word, đã chuyển sang đọc văn bản thuần (không có ảnh, không nhận đáp án gạch chân).');
+  return rawResult.value || '';
+}
+
+function extractParagraphContent(
+  pContent: string,
+  relIdToDataUri: Record<string, string>
+): { text: string; embeddedImageUri?: string } {
+  const blipMatch =
+    pContent.match(/r:embed="([^"]+)"/) || pContent.match(/r:id="([^"]+)"/);
+  const embeddedImageUri =
+    blipMatch && relIdToDataUri[blipMatch[1]] ? relIdToDataUri[blipMatch[1]] : undefined;
+
+  const rRegex = /<w:r(?:\s[^>]*)?>([\s\S]*?)<\/w:r>/g;
+  let rMatch: RegExpExecArray | null;
+
+  interface RunSegment {
+    text: string;
+    isEmphasized: boolean;
+  }
+
+  const runs: RunSegment[] = [];
+
+  while ((rMatch = rRegex.exec(pContent)) !== null) {
+    const rInner = rMatch[1];
+    const tRegex = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+    let tMatch: RegExpExecArray | null;
+    let runText = '';
+    while ((tMatch = tRegex.exec(rInner)) !== null) {
+      runText += decodeXmlEntities(tMatch[1]);
+    }
+    if (/w:tab\b/.test(rInner)) {
+      runText += '\t';
+    }
+
+    if (!runText) continue;
+
+    const rPrMatch = rInner.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/);
+    let isEmphasized = false;
+    if (rPrMatch) {
+      const rPr = rPrMatch[1];
+      const hasUnderline = /<w:u\b(?![^>]*w:val="none")/.test(rPr);
+      const hasHighlight = /<w:highlight\b(?![^>]*w:val="none")/.test(rPr);
+      const colorMatch = rPr.match(/<w:color\b[^>]*w:val="([^"]+)"/i);
+      const hasAccentColor = Boolean(
+        colorMatch &&
+          !['auto', '000000', '111111', '222222', '333333'].includes(
+            colorMatch[1].toLowerCase()
+          )
+      );
+
+      if (hasUnderline || hasHighlight || hasAccentColor) {
+        isEmphasized = true;
+      }
+    }
+
+    runs.push({ text: runText, isEmphasized });
+  }
+
+  let lineText = '';
+  for (let i = 0; i < runs.length; i++) {
+    const seg = runs[i];
+    if (seg.isEmphasized && /^\s*([ABCDabcd])\s*[.)]/.test(seg.text)) {
+      lineText += seg.text.replace(/^\s*([ABCDabcd])\s*([.)])/, ' *$1$2');
+    } else if (
+      seg.isEmphasized &&
+      /^\s*([ABCDabcd])\s*$/.test(seg.text) &&
+      i + 1 < runs.length &&
+      /^\s*[.)]/.test(runs[i + 1].text)
+    ) {
+      lineText += ` *${seg.text.trim()}`;
+    } else {
+      lineText += seg.text;
+    }
+  }
+
   return {
-    text: rawResult.value || '',
-    imageCount: 0,
-    skippedImages: 0,
-    warnings,
+    text: lineText.trim(),
+    embeddedImageUri,
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Relationship + image helpers                                              */
-/* -------------------------------------------------------------------------- */
-
-// <a:blip r:embed="rIdX"> (DrawingML) và <v:imagedata r:id="rIdX"> (VML).
-// Không dùng r:id chung chung vì <w:hyperlink r:id> cũng có thuộc tính này.
-const IMAGE_REF_SOURCE = '<(?:a:blip|v:imagedata)\\b[^>]*?\\br:(?:embed|id)="([^"]+)"';
-
-/** Bỏ khối <mc:Fallback> để cùng một ảnh không bị đếm hai lần. */
-function stripAlternateFallback(xml: string): string {
-  return xml.replace(/<mc:Fallback>[\s\S]*?<\/mc:Fallback>/g, '');
-}
-
-function extractImageRelIds(xmlFragment: string): string[] {
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  const regex = new RegExp(IMAGE_REF_SOURCE, 'g');
-  let m: RegExpExecArray | null;
-  while ((m = regex.exec(stripAlternateFallback(xmlFragment))) !== null) {
-    if (!seen.has(m[1])) {
-      seen.add(m[1]);
-      ids.push(m[1]);
-    }
-  }
-  return ids;
-}
-
-function collectReferencedImageRelIds(documentXml: string): string[] {
-  return extractImageRelIds(documentXml);
-}
-
-interface RelationshipInfo {
-  target: string;
-  type: string;
-  external: boolean;
-}
-
-function readXmlAttribute(tag: string, name: string): string {
-  const m = tag.match(new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, 'i'));
-  return m ? m[2] : '';
-}
-
-/** Đọc rels bằng từng thuộc tính riêng, không phụ thuộc thứ tự Id/Type/Target. */
-function parseRelationships(relsXml: string): Map<string, RelationshipInfo> {
-  const map = new Map<string, RelationshipInfo>();
-  const tagRegex = /<Relationship\b[^>]*>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = tagRegex.exec(relsXml)) !== null) {
-    const tag = m[0];
-    const id = readXmlAttribute(tag, 'Id');
-    const target = readXmlAttribute(tag, 'Target');
-    if (!id || !target) continue;
-    map.set(id, {
-      target,
-      type: readXmlAttribute(tag, 'Type'),
-      external: /^external$/i.test(readXmlAttribute(tag, 'TargetMode')),
-    });
-  }
-  return map;
-}
-
-/** Chuẩn hóa đường dẫn đích (tương đối so với thư mục word/) và xử lý "../". */
-function resolveWordPartPath(target: string): string {
-  const cleaned = target.replace(/^\/+/, '');
-  const full = cleaned.startsWith('word/') ? cleaned : `word/${cleaned}`;
-  const out: string[] = [];
-  for (const part of full.split('/')) {
-    if (part === '..') out.pop();
-    else if (part && part !== '.') out.push(part);
-  }
-  return out.join('/');
-}
-
-function uint8ToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
-interface DecodedImage {
-  drawable: CanvasImageSource;
-  width: number;
-  height: number;
-  release: () => void;
-}
-
-async function decodeToDrawable(blob: Blob): Promise<DecodedImage> {
-  if (typeof createImageBitmap === 'function') {
-    try {
-      const bitmap = await createImageBitmap(blob);
-      return {
-        drawable: bitmap,
-        width: bitmap.width,
-        height: bitmap.height,
-        release: () => bitmap.close(),
-      };
-    } catch {
-      // thử cách <img> bên dưới
-    }
-  }
-  const url = URL.createObjectURL(blob);
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image();
-      el.onload = () => resolve(el);
-      el.onerror = () => reject(new Error('Không giải mã được ảnh'));
-      el.src = url;
-    });
-    return {
-      drawable: img,
-      width: img.naturalWidth,
-      height: img.naturalHeight,
-      release: () => URL.revokeObjectURL(url),
-    };
-  } catch (err) {
-    URL.revokeObjectURL(url);
-    throw err;
-  }
-}
-
-/** Thu nhỏ + nén JPEG, thử các mức giảm dần cho tới khi vừa ngân sách. */
-async function compressRasterToDataUri(
-  bytes: Uint8Array,
-  mime: string,
-  capChars: number
-): Promise<string | null> {
-  if (typeof document === 'undefined') return null;
-
-  let decoded: DecodedImage;
-  try {
-    decoded = await decodeToDrawable(new Blob([bytes], { type: mime }));
-  } catch {
-    return null;
-  }
-
-  try {
-    if (!decoded.width || !decoded.height) return null;
-    let smallest: string | null = null;
-
-    for (const step of COMPRESS_STEPS) {
-      const scale = Math.min(1, step.side / Math.max(decoded.width, decoded.height));
-      const w = Math.max(1, Math.round(decoded.width * scale));
-      const h = Math.max(1, Math.round(decoded.height * scale));
-
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return null;
-      // JPEG không có nền trong suốt nên tô nền trắng trước
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(decoded.drawable, 0, 0, w, h);
-
-      const out = canvas.toDataURL('image/jpeg', step.quality);
-      canvas.width = 0;
-      canvas.height = 0;
-
-      if (!smallest || out.length < smallest.length) smallest = out;
-      if (out.length <= capChars) return out;
-    }
-    return smallest;
-  } finally {
-    decoded.release();
-  }
-}
-
-interface ImageMapResult {
-  map: Record<string, string>;
-  loaded: number;
-  skipped: number;
-}
-
 /**
- * Chỉ xử lý các rId mà document.xml thật sự dùng, theo thứ tự xuất hiện.
- * Mỗi ảnh được chia một phần ngân sách chung; ảnh nhỏ hơn thì để lại phần dư cho ảnh sau.
- */
-async function buildImageDataUriMap(
-  zip: JSZip,
-  referencedIds: string[],
-  warnings: string[]
-): Promise<ImageMapResult> {
-  const result: ImageMapResult = { map: {}, loaded: 0, skipped: 0 };
-  if (referencedIds.length === 0) return result;
-
-  const relsFile = zip.file('word/_rels/document.xml.rels');
-  if (!relsFile) return result;
-  const relationships = parseRelationships(await relsFile.async('string'));
-
-  // Nhiều rId có thể trỏ cùng một file ảnh, chỉ xử lý một lần
-  const dataUriByPath = new Map<string, string | null>();
-  let remainingBudget = MAX_TOTAL_IMAGE_BYTES;
-  let imagesLeft = referencedIds.length;
-  let imageNo = 0;
-
-  for (const rId of referencedIds) {
-    imageNo++;
-    const rel = relationships.get(rId);
-    const finishOne = () => {
-      imagesLeft = Math.max(0, imagesLeft - 1);
-    };
-
-    if (!rel || rel.external) {
-      result.skipped++;
-      finishOne();
-      warnings.push(`Ảnh ${imageNo}: được liên kết từ bên ngoài file Word nên không đọc được.`);
-      continue;
-    }
-
-    const path = resolveWordPartPath(rel.target);
-    if (dataUriByPath.has(path)) {
-      const cached = dataUriByPath.get(path);
-      if (cached) {
-        result.map[rId] = cached;
-        result.loaded++;
-      } else {
-        result.skipped++;
-      }
-      finishOne();
-      continue;
-    }
-
-    const ext = path.split('.').pop()?.toLowerCase() || '';
-    const mediaFile = zip.file(path);
-    if (!mediaFile) {
-      dataUriByPath.set(path, null);
-      result.skipped++;
-      finishOne();
-      warnings.push(`Ảnh ${imageNo}: không tìm thấy dữ liệu trong file Word.`);
-      continue;
-    }
-
-    // SVG: giữ nguyên nếu nhỏ
-    if (ext === 'svg') {
-      const bytes = await mediaFile.async('uint8array');
-      const uri = `data:image/svg+xml;base64,${uint8ToBase64(bytes)}`;
-      if (uri.length <= MAX_SINGLE_IMAGE_BYTES && uri.length <= remainingBudget) {
-        remainingBudget -= uri.length;
-        dataUriByPath.set(path, uri);
-        result.map[rId] = uri;
-        result.loaded++;
-      } else {
-        dataUriByPath.set(path, null);
-        result.skipped++;
-        warnings.push(`Ảnh ${imageNo} (SVG): quá nặng nên bị bỏ qua.`);
-      }
-      finishOne();
-      continue;
-    }
-
-    const mime = RASTER_MIME_BY_EXT[ext];
-    if (!mime) {
-      // emf, wmf, tif... trình duyệt không hiển thị được
-      dataUriByPath.set(path, null);
-      result.skipped++;
-      finishOne();
-      warnings.push(
-        `Ảnh ${imageNo}: định dạng .${ext || '?'} không được trình duyệt hỗ trợ. Hãy chèn lại ảnh dạng PNG/JPG.`
-      );
-      continue;
-    }
-
-    const bytes = await mediaFile.async('uint8array');
-    const capChars = Math.min(
-      MAX_SINGLE_IMAGE_BYTES,
-      Math.max(MIN_IMAGE_BUDGET_BYTES, Math.floor(remainingBudget / Math.max(1, imagesLeft)))
-    );
-
-    let dataUri: string | null = null;
-    const base64Estimate = Math.ceil(bytes.length / 3) * 4 + `data:${mime};base64,`.length;
-    if (base64Estimate <= capChars) {
-      // Ảnh đã đủ nhẹ: giữ nguyên bản gốc, không nén lại để khỏi giảm chất lượng
-      dataUri = `data:${mime};base64,${uint8ToBase64(bytes)}`;
-    } else {
-      dataUri = await compressRasterToDataUri(bytes, mime, capChars);
-    }
-
-    if (dataUri && dataUri.length <= remainingBudget) {
-      remainingBudget -= dataUri.length;
-      dataUriByPath.set(path, dataUri);
-      result.map[rId] = dataUri;
-      result.loaded++;
-      if (dataUri.length > capChars) {
-        warnings.push(`Ảnh ${imageNo}: đã nén mạnh nhưng vẫn khá nặng, có thể ảnh hưởng chất lượng hiển thị.`);
-      }
-    } else {
-      dataUriByPath.set(path, null);
-      result.skipped++;
-      warnings.push(
-        dataUri
-          ? `Ảnh ${imageNo}: vượt giới hạn dung lượng chung của đề nên bị bỏ qua. Hãy giảm số ảnh hoặc dùng ảnh nhỏ hơn.`
-          : `Ảnh ${imageNo}: không nén được (lỗi giải mã) nên bị bỏ qua.`
-      );
-    }
-    finishOne();
-  }
-
-  return result;
-}
-
-/* -------------------------------------------------------------------------- */
-/*  document.xml parser                                                       */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Parses OpenXML word/document.xml paragraphs, runs, and embedded image references.
+ * Parses OpenXML word/document.xml paragraphs (<w:p>), data tables (<w:tbl>), runs, and embedded image references.
  */
 export function parseWordDocumentXmlWithAnswerHighlights(
   xmlString: string,
@@ -436,87 +218,86 @@ export function parseWordDocumentXmlWithAnswerHighlights(
 ): string {
   const paragraphLines: string[] = [];
 
-  // (?:\s(?:[^>]*[^/>])?)? để không khớp nhầm thẻ tự đóng như <w:p w:rsidR="..."/>
-  const pRegex = /<w:p(?:\s(?:[^>]*[^/>])?)?>([\s\S]*?)<\/w:p>/g;
-  let pMatch: RegExpExecArray | null;
+  // Match either a full <w:tbl>...</w:tbl> block or a top-level <w:p>...</w:p> block in document order
+  const blockRegex = /<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>|<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g;
+  let blockMatch: RegExpExecArray | null;
 
-  while ((pMatch = pRegex.exec(xmlString)) !== null) {
-    const pContent = pMatch[1];
+  while ((blockMatch = blockRegex.exec(xmlString)) !== null) {
+    const fullBlock = blockMatch[0];
 
-    // Mọi ảnh trong đoạn (không trùng lặp), theo thứ tự xuất hiện
-    const embeddedImageUris = extractImageRelIds(pContent)
-      .map((rId) => relIdToDataUri[rId])
-      .filter((uri): uri is string => Boolean(uri));
+    if (fullBlock.startsWith('<w:tbl')) {
+      const trRegex = /<w:tr(?:\s[^>]*)?>([\s\S]*?)<\/w:tr>/g;
+      let trMatch: RegExpExecArray | null;
+      const tableRows: string[][] = [];
+      const tableImages: string[] = [];
 
-    const rRegex = /<w:r(?:\s(?:[^>]*[^/>])?)?>([\s\S]*?)<\/w:r>/g;
-    let rMatch: RegExpExecArray | null;
+      while ((trMatch = trRegex.exec(fullBlock)) !== null) {
+        const trInner = trMatch[1];
+        const tcRegex = /<w:tc(?:\s[^>]*)?>([\s\S]*?)<\/w:tc>/g;
+        let tcMatch: RegExpExecArray | null;
+        const rowCells: string[] = [];
 
-    interface RunSegment {
-      text: string;
-      isEmphasized: boolean;
-    }
+        while ((tcMatch = tcRegex.exec(trInner)) !== null) {
+          const tcInner = tcMatch[1];
+          const pInCellRegex = /<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g;
+          let pCellMatch: RegExpExecArray | null;
+          const cellParts: string[] = [];
 
-    const runs: RunSegment[] = [];
+          while ((pCellMatch = pInCellRegex.exec(tcInner)) !== null) {
+            const { text, embeddedImageUri } = extractParagraphContent(
+              pCellMatch[1],
+              relIdToDataUri
+            );
+            if (text) cellParts.push(text);
+            if (embeddedImageUri) tableImages.push(embeddedImageUri);
+          }
 
-    while ((rMatch = rRegex.exec(pContent)) !== null) {
-      const rInner = rMatch[1];
-      const tRegex = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
-      let tMatch: RegExpExecArray | null;
-      let runText = '';
-      while ((tMatch = tRegex.exec(rInner)) !== null) {
-        runText += decodeXmlEntities(tMatch[1]);
-      }
-      if (/w:tab\b/.test(rInner)) {
-        runText += '\t';
-      }
+          rowCells.push(cellParts.join(' ').replace(/\|/g, '/').trim());
+        }
 
-      if (!runText) continue;
-
-      const rPrMatch = rInner.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/);
-      let isEmphasized = false;
-      if (rPrMatch) {
-        const rPr = rPrMatch[1];
-        const hasUnderline = /<w:u\b(?![^>]*w:val="none")/.test(rPr);
-        const hasHighlight = /<w:highlight\b(?![^>]*w:val="none")/.test(rPr);
-        const colorMatch = rPr.match(/<w:color\b[^>]*w:val="([^"]+)"/i);
-        const hasAccentColor = Boolean(
-          colorMatch &&
-            !['auto', '000000', '111111', '222222', '333333'].includes(
-              colorMatch[1].toLowerCase()
-            )
-        );
-
-        if (hasUnderline || hasHighlight || hasAccentColor) {
-          isEmphasized = true;
+        if (rowCells.some((c) => c.length > 0)) {
+          tableRows.push(rowCells);
         }
       }
 
-      runs.push({ text: runText, isEmphasized });
-    }
+      if (tableRows.length > 0) {
+        const allCells = tableRows.flat().filter(Boolean);
+        // Check if this Word table is just a layout grid for A. / B. / C. / D. options or Answer Key pairs
+        const optionLikeCells = allCells.filter((c) =>
+          /^(?:\*)?\s*\[?[ABCDabcd]\]?[.)]\s+/.test(c)
+        );
+        const answerKeyLikeCells = allCells.filter((c) =>
+          /^(?:Câu\s*)?\d{1,3}\s*[.:=\-]?\s*[ABCD]{1,4}$/i.test(c)
+        );
 
-    let lineText = '';
-    for (let i = 0; i < runs.length; i++) {
-      const seg = runs[i];
-      if (seg.isEmphasized && /^\s*([ABCD])\s*[.)]/.test(seg.text)) {
-        lineText += seg.text.replace(/^\s*([ABCD])\s*([.)])/, ' *$1$2');
-      } else if (
-        seg.isEmphasized &&
-        /^\s*([ABCD])\s*$/.test(seg.text) &&
-        i + 1 < runs.length &&
-        /^\s*[.)]/.test(runs[i + 1].text)
-      ) {
-        lineText += ` *${seg.text.trim()}`;
-      } else {
-        lineText += seg.text;
+        if (optionLikeCells.length >= 2 || answerKeyLikeCells.length >= 2) {
+          for (const c of allCells) {
+            paragraphLines.push(c);
+          }
+        } else {
+          // It is a genuine Data Table (Bảng số liệu)
+          paragraphLines.push('[TABLE_START]');
+          for (const r of tableRows) {
+            paragraphLines.push(`| ${r.join(' | ')} |`);
+          }
+          paragraphLines.push('[TABLE_END]');
+        }
       }
+
+      for (const imgUri of tableImages) {
+        paragraphLines.push(`[IMAGE:${imgUri}]`);
+      }
+      continue;
     }
 
-    const cleaned = lineText.trim();
-    if (cleaned) {
-      paragraphLines.push(cleaned);
+    // Regular paragraph <w:p>
+    const pContent = blockMatch[1] || '';
+    const { text, embeddedImageUri } = extractParagraphContent(pContent, relIdToDataUri);
+    if (text) {
+      paragraphLines.push(text);
     }
-    for (const uri of embeddedImageUris) {
-      paragraphLines.push(`[IMAGE:${uri}]`);
+    if (embeddedImageUri) {
+      paragraphLines.push(`[IMAGE:${embeddedImageUri}]`);
     }
   }
 
@@ -556,7 +337,7 @@ export async function generateSampleDocxArrayBuffer(): Promise<ArrayBuffer> {
     '.rels',
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`
   );
 
