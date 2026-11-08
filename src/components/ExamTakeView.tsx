@@ -971,8 +971,9 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                         )}
                       </div>
 
-                      <p className="text-sm sm:text-[15px] text-slate-800 font-medium leading-relaxed mb-3.5 whitespace-pre-line">
-                        {displayPrompt}
+                      <p className="text-[15px] sm:text-base text-slate-800 font-normal leading-[1.7] mb-3.5 whitespace-pre-line">
+                        <strong className="font-bold text-slate-900">Câu {question.number}.</strong>{' '}
+                        {cleanQuestionText}
                       </p>
 
                       {/* Question Image (if present) */}
@@ -1013,7 +1014,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                             const isCorrectOption = question.correctAnswer === optKey;
 
                             let rowStyle =
-                              'border border-slate-200/80 bg-slate-50/40 hover:bg-blue-50/30 hover:border-blue-300 text-slate-700 rounded-xl px-3.5 py-3 sm:py-2.5';
+                              'border border-slate-200/80 bg-slate-50/40 hover:bg-blue-50/30 hover:border-blue-300 text-slate-800 rounded-xl px-3.5 py-3 sm:py-2.5';
                             let circleStyle = 'border-slate-300 bg-white';
 
                             if (showAnswerFeedback) {
@@ -1038,7 +1039,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                             return (
                               <label
                                 key={optKey}
-                                className={`flex items-start gap-3 text-sm min-h-[44px] transition-colors select-none ${
+                                className={`flex items-start gap-3 text-[14.5px] sm:text-[15px] min-h-[44px] transition-colors select-none ${
                                   isSubmitted ? 'cursor-default' : 'cursor-pointer'
                                 } ${rowStyle}`}
                               >
@@ -1052,15 +1053,15 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                                   className="sr-only"
                                 />
                                 <span
-                                  className={`w-4 h-4 mt-0.5 rounded-full border flex items-center justify-center shrink-0 transition-colors ${circleStyle}`}
+                                  className={`w-4 h-4 mt-1 rounded-full border flex items-center justify-center shrink-0 transition-colors ${circleStyle}`}
                                   aria-hidden="true"
                                 >
                                   {(isSelected || (showAnswerFeedback && isCorrectOption)) && (
                                     <span className="w-1.5 h-1.5 rounded-full bg-white" />
                                   )}
                                 </span>
-                                <span className="leading-snug whitespace-pre-line">
-                                  <strong>{optKey}.</strong> {question.options[optKey]}
+                                <span className="leading-relaxed whitespace-pre-line">
+                                  <strong className="font-bold">{optKey}.</strong> {question.options[optKey]}
                                 </span>
                               </label>
                             );
@@ -1149,13 +1150,13 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                             return (
                               <div
                                 key={optKey}
-                                className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 text-sm transition-colors ${rowStyle}`}
+                                className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 text-[14.5px] sm:text-[15px] transition-colors ${rowStyle}`}
                               >
                                 <div className="flex items-start gap-2.5 flex-1">
                                   <span className="font-bold text-slate-700 shrink-0">
                                     {optKey}.
                                   </span>
-                                  <span className="leading-snug whitespace-pre-line">
+                                  <span className="leading-relaxed whitespace-pre-line">
                                     {question.options[optKey]}
                                   </span>
                                 </div>
