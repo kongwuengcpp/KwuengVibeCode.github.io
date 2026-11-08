@@ -147,6 +147,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [showAdminHint, setShowAdminHint] = useState<boolean>(false);
   const [darkAccent, setDarkAccent] = useState<boolean>(false);
   const [isEditingBranding, setIsEditingBranding] = useState<boolean>(false);
+  const [examPendingDelete, setExamPendingDelete] = useState<Exam | null>(null);
   const [editTitle, setEditTitle] = useState<string>(branding.title);
   const [editSubtitle, setEditSubtitle] = useState<string>(branding.subtitle);
   const [editVersion, setEditVersion] = useState<string>(branding.version);
@@ -1190,7 +1191,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           </button>
                           <button
                             type="button"
-                            onClick={() => onDeleteExam(exam.id)}
+                            onClick={() => setExamPendingDelete(exam)}
                             aria-label={`Xoá ${exam.title}`}
                             className="w-10 h-10 rounded-xl border border-slate-200 bg-white text-slate-400 hover:text-rose-600 flex items-center justify-center cursor-pointer shrink-0"
                           >
@@ -1394,7 +1395,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => onDeleteExam(exam.id)}
+                                    onClick={() => setExamPendingDelete(exam)}
                                     aria-label={`Xoá ${exam.title}`}
                                     title="Xoá đề thi (Admin)"
                                     className="w-8 h-8 rounded-lg border border-slate-200 bg-white hover:bg-rose-50 text-slate-400 hover:text-rose-600 flex items-center justify-center transition-colors cursor-pointer"
@@ -1594,6 +1595,86 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Modal xác nhận xoá đề thi tránh bấm nhầm */}
+      {examPendingDelete && isAdmin && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-exam-modal-title"
+          onClick={() => setExamPendingDelete(null)}
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 space-y-4"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3
+                    id="delete-exam-modal-title"
+                    className="text-base font-extrabold text-slate-900"
+                  >
+                    Xác nhận xoá đề thi?
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Thao tác này sẽ xoá vĩnh viễn đề thi khỏi hệ thống
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExamPendingDelete(null)}
+                aria-label="Đóng thông báo xoá đề"
+                className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center cursor-pointer transition-colors shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="rounded-2xl border border-rose-200/80 bg-rose-50/50 p-3.5 space-y-1">
+              <div className="text-sm font-bold text-slate-900 leading-snug">
+                {examPendingDelete.title}
+              </div>
+              <div className="text-xs font-medium text-slate-600">
+                Môn: <strong>{normalizeSubjectCategory(examPendingDelete.category)}</strong> ·{' '}
+                {examPendingDelete.questions.length} câu hỏi
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Bạn có chắc chắn muốn xoá đề thi này không? Đề thi sẽ bị xoá trên cả máy này và đồng bộ Cloud, <strong>không thể khôi phục lại</strong> sau khi xoá.
+            </p>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setExamPendingDelete(null)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+              >
+                Huỷ bỏ
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const targetId = examPendingDelete.id;
+                  setExamPendingDelete(null);
+                  onDeleteExam(targetId);
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Xác nhận xoá</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
