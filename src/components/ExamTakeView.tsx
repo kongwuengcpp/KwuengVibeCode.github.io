@@ -771,6 +771,55 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
               </button>
             </div>
 
+            {/* Mobile Shuffle Questions & Options Controls (directly below instant feedback bar on mobile) */}
+            {!isSubmitted && (
+              <div className="lg:hidden mt-2.5 rounded-xl border border-indigo-200/80 bg-indigo-50/40 px-3.5 py-2.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-700">
+                    Xáo trộn câu hỏi
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={shuffleQuestions}
+                    aria-label="Xáo trộn câu hỏi (Mobile)"
+                    onClick={() => applyShuffleAndReset(!shuffleQuestions, shuffleOptions)}
+                    className={`w-10 h-5 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
+                      shuffleQuestions ? 'bg-[#2563eb]' : 'bg-slate-300'
+                    }`}
+                  >
+                    <span
+                      className={`block w-4 h-4 rounded-full bg-white shadow-2xs transition-transform ${
+                        shuffleQuestions ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-700">
+                    Xáo trộn đáp án (A, B, C, D)
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={shuffleOptions}
+                    aria-label="Xáo trộn đáp án (A, B, C, D) (Mobile)"
+                    onClick={() => applyShuffleAndReset(shuffleQuestions, !shuffleOptions)}
+                    className={`w-10 h-5 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
+                      shuffleOptions ? 'bg-[#2563eb]' : 'bg-slate-300'
+                    }`}
+                  >
+                    <span
+                      className={`block w-4 h-4 rounded-full bg-white shadow-2xs transition-transform ${
+                        shuffleOptions ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Questions List Grouped into Separate Sections (Phần I, Phần II, Phần III) */}
             <div className="mt-4 sm:mt-6 space-y-6 sm:space-y-8">
               {filteredQuestions.length === 0 ? (
