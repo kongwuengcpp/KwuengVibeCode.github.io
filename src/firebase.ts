@@ -3,7 +3,6 @@ import { getAuth } from 'firebase/auth';
 import {
   getFirestore,
   doc,
-  getDoc,
   getDocs,
   setDoc,
   deleteDoc,
@@ -49,6 +48,59 @@ export interface FirestoreErrorInfo {
   };
 }
 
+export interface CloudResult {
+  ok: boolean;
+  error?: string;
+}
+
+export const MAX_EXAM_DOC_BYTES = 900_000;
+export const MAX_QUESTIONS = 500;
+export const MAX_LOGO_CHARS = 700_000;
+
+export class ExamTooLargeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ExamTooLargeError';
+  }
+}
+
+export const utf8Bytes = (s: string): number => new TextEncoder().encode(s).length;
+
+export function describeFirestoreError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = msg.toLowerCase();
+  if (m.includes('exceeds the maximum allowed size') || m.includes('too large')) {
+    return 'Đề quá nặng so với giới hạn 1 MB của Firestore. Hãy giảm số ảnh hoặc dùng ảnh nhỏ hơn.';
+  }
+  if (m.includes('permission') || m.includes('insufficient')) {
+    return 'Không có quyền ghi lên Cloud. Kiểm tra khóa admin và Firestore Rules đã deploy.';
+  }
+  if (m.includes('nested arrays')) {
+    return 'Dữ liệu có mảng lồng nhau (thường do bảng số liệu). Hãy báo lại để sửa.';
+  }
+  if (
+    m.includes('offline') ||
+    m.includes('unavailable') ||
+    m.includes('network') ||
+    m.includes('failed to fetch')
+  ) {
+    return 'Mất kết nối mạng. Đề chưa được lưu lên Cloud.';
+  }
+  return msg.length > 200 ? msg.slice(0, 200) + '…' : msg;
+}
+
+export function isOfflineErrorMessage(errOrMsg: unknown): boolean {
+  const msg = errOrMsg instanceof Error ? errOrMsg.message : String(errOrMsg || '');
+  const m = msg.toLowerCase();
+  return (
+    m.includes('mất kết nối mạng') ||
+    m.includes('offline') ||
+    m.includes('unavailable') ||
+    m.includes('network') ||
+    m.includes('failed to fetch')
+  );
+}
+
 export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
@@ -76,6 +128,7 @@ export function handleFirestoreError(
 }
 
 async function testConnection() {
+  if (typeof window === 'undefined') return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
@@ -85,7 +138,7 @@ async function testConnection() {
   }
 }
 
-testConnection();
+void testConnection();
 
 export const IGNORED_EXAM_IDS = new Set(['catalog_index', 'exam-test-123']);
 
@@ -124,7 +177,11 @@ export function sanitizeSiteBrandingPayload(branding: SiteBranding): Record<stri
   const version =
     String(branding.version || DEFAULT_SITE_BRANDING.version).trim().slice(0, 100) ||
     DEFAULT_SITE_BRANDING.version;
-  const logoUrl = String(branding.logoUrl || '').trim().slice(0, 850000);
+  const logoUrl = String(branding.logoUrl || '').trim();
+
+  if (logoUrl.length > MAX_LOGO_CHARS) {
+    throw new ExamTooLargeError('Logo quá nặng, hãy chọn ảnh nhỏ hơn.');
+  }
 
   return {
     title,
@@ -169,11 +226,7 @@ export function normalizeQuestionTableData(raw: unknown): Exam['questions'][numb
 
   if (headers.length === 0 && rows.length === 0) return undefined;
 
-  const colCount = Math.max(
-    headers.length,
-    ...rows.map((r) => r.length),
-    1
-  );
+  const colCount = Math.max(headers.length, ...rows.map((r) => r.length), 1);
   const normalizedHeaders = Array.from({ length: colCount }, (_, i) => headers[i] ?? '');
   const normalizedRows = rows.map((r) =>
     Array.from({ length: colCount }, (_, i) => r[i] ?? '')
@@ -191,7 +244,10 @@ export function normalizeQuestionTableData(raw: unknown): Exam['questions'][numb
   };
 }
 
-function serializeQuestionForFirestore(q: Exam['questions'][number], idx: number): Record<string, unknown> {
+function serializeQuestionForFirestore(
+  q: Exam['questions'][number],
+  idx: number
+): Record<string, unknown> {
   const qType = q.type === 'multiple' || q.type === 'short' ? q.type : 'single';
   const safeOptions = {
     A: String(q.options?.A ?? (qType === 'short' ? '' : 'Phương án A')),
@@ -240,9 +296,13 @@ function serializeQuestionForFirestore(q: Exam['questions'][number], idx: number
   return serialized;
 }
 
-export function sanitizeExamPayload(exam: Exam): { id: string; payload: Record<string, unknown> } {
+function buildRawExamPayload(exam: Exam): {
+  id: string;
+  payload: Record<string, unknown>;
+  cleanQuestions: Record<string, unknown>[];
+} {
   const safeId = sanitizeDocId(exam.id);
-  const rawQuestions = Array.isArray(exam.questions) ? exam.questions.slice(0, 500) : [];
+  const rawQuestions = Array.isArray(exam.questions) ? exam.questions : [];
   const cleanQuestions = rawQuestions.map((q, idx) => serializeQuestionForFirestore(q, idx));
 
   const payload: Record<string, unknown> = {
@@ -263,21 +323,42 @@ export function sanitizeExamPayload(exam: Exam): { id: string; payload: Record<s
     adminToken: DEFAULT_ADMIN_KEY,
   };
 
-  // Guard against Firestore 1 MiB (1,048,576 bytes) document limit when exams contain large embedded base64 images
+  return { id: safeId, payload, cleanQuestions };
+}
+
+export function estimateExamBytes(exam: Exam): number {
   try {
-    let serializedStr = JSON.stringify(payload);
-    if (serializedStr.length > 880000) {
-      for (let i = cleanQuestions.length - 1; i >= 0; i--) {
-        const qObj = cleanQuestions[i];
-        if (typeof qObj.imageUrl === 'string' && qObj.imageUrl.startsWith('data:image/') && qObj.imageUrl.length > 30000) {
-          delete qObj.imageUrl;
-          serializedStr = JSON.stringify(payload);
-          if (serializedStr.length <= 880000) break;
-        }
-      }
-    }
+    const { payload } = buildRawExamPayload(exam);
+    return utf8Bytes(JSON.stringify(payload));
   } catch {
-    // ignore
+    return 0;
+  }
+}
+
+export function sanitizeExamPayload(exam: Exam): { id: string; payload: Record<string, unknown> } {
+  if (Array.isArray(exam.questions) && exam.questions.length > MAX_QUESTIONS) {
+    throw new ExamTooLargeError(`Đề có ${exam.questions.length} câu, tối đa ${MAX_QUESTIONS} câu.`);
+  }
+
+  const { id: safeId, payload, cleanQuestions } = buildRawExamPayload(exam);
+  const bytes = utf8Bytes(JSON.stringify(payload));
+
+  if (bytes > MAX_EXAM_DOC_BYTES) {
+    const heavy = cleanQuestions
+      .map((q, i) => ({
+        n: i + 1,
+        b: typeof q.imageUrl === 'string' ? utf8Bytes(q.imageUrl) : 0,
+      }))
+      .filter((x) => x.b > 0)
+      .sort((a, b) => b.b - a.b)
+      .slice(0, 3)
+      .map((x) => `câu ${x.n} (${Math.round(x.b / 1024)} KB)`)
+      .join(', ');
+    throw new ExamTooLargeError(
+      `Đề nặng ${(bytes / 1024).toFixed(0)} KB, vượt giới hạn ${(MAX_EXAM_DOC_BYTES / 1024).toFixed(0)} KB.` +
+        (heavy ? ` Ảnh nặng nhất: ${heavy}.` : '') +
+        ' Hãy giảm số ảnh hoặc dùng ảnh nhỏ hơn.'
+    );
   }
 
   return { id: safeId, payload };
@@ -318,17 +399,24 @@ export function subscribeToSiteBranding(
   );
 }
 
-export async function saveSiteBrandingToCloud(branding: SiteBranding): Promise<void> {
+export async function saveSiteBrandingToCloud(branding: SiteBranding): Promise<CloudResult> {
   const path = 'settings/site_config';
+  let payload: Record<string, unknown>;
   try {
-    const payload = sanitizeSiteBrandingPayload(branding);
+    payload = sanitizeSiteBrandingPayload(branding);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  try {
     await setDoc(doc(db, 'settings', 'site_config'), payload);
+    return { ok: true };
   } catch (error) {
     try {
       handleFirestoreError(error, OperationType.WRITE, path);
     } catch {
       // Logged via handleFirestoreError
     }
+    return { ok: false, error: describeFirestoreError(error) };
   }
 }
 
@@ -438,25 +526,32 @@ export function subscribeToCloudExams(
   );
 }
 
-export async function saveExamToCloud(exam: Exam): Promise<boolean> {
-  if (!exam || IGNORED_EXAM_IDS.has(exam.id)) return false;
-  const { id, payload } = sanitizeExamPayload(exam);
-  const path = `exams/${id}`;
+export async function saveExamToCloud(exam: Exam): Promise<CloudResult> {
+  if (!exam || !exam.id || IGNORED_EXAM_IDS.has(exam.id)) {
+    return { ok: false, error: 'Mã đề không hợp lệ.' };
+  }
+  let built: { id: string; payload: Record<string, unknown> };
   try {
-    await setDoc(doc(db, 'exams', id), payload);
-    return true;
+    built = sanitizeExamPayload(exam);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  try {
+    await setDoc(doc(db, 'exams', built.id), built.payload);
+    return { ok: true };
   } catch (error) {
     try {
-      handleFirestoreError(error, OperationType.WRITE, path);
+      handleFirestoreError(error, OperationType.WRITE, `exams/${built.id}`);
     } catch {
       // Logged via handleFirestoreError
     }
-    return false;
+    return { ok: false, error: describeFirestoreError(error) };
   }
 }
 
-export async function deleteExamFromCloud(examId: string): Promise<boolean> {
+export async function deleteExamFromCloud(examId: string): Promise<CloudResult> {
   const raw = String(examId || '').trim();
+  if (!raw) return { ok: false, error: 'Mã đề cần xoá không hợp lệ.' };
   const safeId = sanitizeDocId(raw);
   const path = `exams/${safeId}`;
   try {
@@ -464,79 +559,77 @@ export async function deleteExamFromCloud(examId: string): Promise<boolean> {
     if (raw && raw !== safeId) {
       await deleteDoc(doc(db, 'exams', raw)).catch(() => {});
     }
-    const snap = await getDocs(collection(db, 'exams'));
-    const extraDeletes: Promise<void>[] = [];
-    snap.forEach((docSnap) => {
-      const data = docSnap.data();
-      if (docSnap.id === raw || docSnap.id === safeId || data?.id === raw || data?.id === safeId) {
-        extraDeletes.push(deleteDoc(doc(db, 'exams', docSnap.id)));
+    try {
+      const snap = await getDocs(collection(db, 'exams'));
+      const extraDeletes: Promise<void>[] = [];
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (docSnap.id === raw || docSnap.id === safeId || data?.id === raw || data?.id === safeId) {
+          extraDeletes.push(deleteDoc(doc(db, 'exams', docSnap.id)));
+        }
+      });
+      if (extraDeletes.length > 0) {
+        await Promise.allSettled(extraDeletes);
       }
-    });
-    if (extraDeletes.length > 0) {
-      await Promise.allSettled(extraDeletes);
+    } catch {
+      // Ignore secondary cleanup query errors if primary deleteDoc succeeded
     }
-    return true;
+    return { ok: true };
   } catch (error) {
     try {
       handleFirestoreError(error, OperationType.DELETE, path);
     } catch {
       // Logged via handleFirestoreError
     }
-    return false;
+    return { ok: false, error: describeFirestoreError(error) };
   }
+}
+
+export interface SyncAllResult {
+  success: boolean;
+  count: number;
+  failed: { id: string; title?: string; error: string }[];
+  brandingError?: string;
 }
 
 export async function syncAllToCloud(
   exams: Exam[],
-  branding: SiteBranding
-): Promise<{ success: boolean; count: number; error?: string }> {
-  let successCount = 0;
-  let lastError = '';
-
-  try {
-    await saveSiteBrandingToCloud(branding);
-  } catch (err) {
-    lastError = err instanceof Error ? err.message : String(err);
+  branding: SiteBranding,
+  deps?: {
+    saveExam?: (exam: Exam) => Promise<CloudResult>;
+    saveBranding?: (branding: SiteBranding) => Promise<CloudResult>;
   }
+): Promise<SyncAllResult> {
+  const writeExam = deps?.saveExam || saveExamToCloud;
+  const writeBranding = deps?.saveBranding || saveSiteBrandingToCloud;
 
-  const activeCloudIds = new Set<string>();
+  let successCount = 0;
+  const failed: { id: string; title?: string; error: string }[] = [];
+  let brandingError: string | undefined;
+
+  const brandingRes = await writeBranding(branding);
+  if (!brandingRes.ok) {
+    brandingError = brandingRes.error || 'Không thể đồng bộ giao diện.';
+  }
 
   for (const exam of exams) {
     if (!exam || !exam.id || IGNORED_EXAM_IDS.has(exam.id)) continue;
-    const { id, payload } = sanitizeExamPayload(exam);
-    activeCloudIds.add(id);
-    const path = `exams/${id}`;
-    try {
-      await setDoc(doc(db, 'exams', id), payload);
+    const res = await writeExam(exam);
+    if (res.ok) {
       successCount++;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-      try {
-        handleFirestoreError(error, OperationType.WRITE, path);
-      } catch {
-        // Logged via handleFirestoreError
-      }
+    } else {
+      failed.push({
+        id: exam.id,
+        title: exam.title,
+        error: res.error || 'Lỗi không xác định',
+      });
     }
-  }
-
-  try {
-    const snap = await getDocs(collection(db, 'exams'));
-    const staleDeletes: Promise<void>[] = [];
-    snap.forEach((docSnap) => {
-      if (!activeCloudIds.has(docSnap.id) || IGNORED_EXAM_IDS.has(docSnap.id)) {
-        staleDeletes.push(deleteDoc(doc(db, 'exams', docSnap.id)));
-      }
-    });
-    if (staleDeletes.length > 0) {
-      await Promise.allSettled(staleDeletes);
-    }
-  } catch {
-    // Ignore cleanup errors
   }
 
   return {
-    success: successCount > 0 || !lastError,
+    success: failed.length === 0 && !brandingError,
     count: successCount,
-    error: lastError || undefined,
+    failed,
+    brandingError,
   };
 }

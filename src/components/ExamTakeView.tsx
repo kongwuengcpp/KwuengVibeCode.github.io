@@ -54,6 +54,26 @@ interface ExamTakeViewProps {
   onBackToDashboard: () => void;
 }
 
+interface SavedInProgressAttempt {
+  examId: string;
+  answers: Record<string, UserAnswerValue>;
+  confirmedQuestions: Record<string, boolean>;
+  questionOrder: Array<{
+    id: string;
+    options: Record<OptionKey, string>;
+    correctAnswer: OptionKey;
+    correctAnswers?: OptionKey[];
+  }>;
+  deadline: number;
+  startedAt: number;
+  shuffleQuestions: boolean;
+  shuffleOptions: boolean;
+}
+
+function getAttemptStorageKey(examId: string): string {
+  return `luyende_attempt_${examId}`;
+}
+
 export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   exam,
   initialAttempt = null,
@@ -91,10 +111,17 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   const [mobilePaletteOpen, setMobilePaletteOpen] = useState<boolean>(false);
   const [resultFilter, setResultFilter] = useState<'all' | 'correct' | 'wrong' | 'unanswered'>('all');
   const [zoomedImageUrl, setZoomedImageUrl] = useState<string | null>(null);
+  const [pendingShuffleAction, setPendingShuffleAction] = useState<{
+    nextSQ: boolean;
+    nextSO: boolean;
+  } | null>(null);
+  const [savedProgressToResume, setSavedProgressToResume] =
+    useState<SavedInProgressAttempt | null>(null);
 
   const totalSeconds = exam.durationMinutes * 60;
   const [remainingSeconds, setRemainingSeconds] = useState<number>(totalSeconds);
   const startTimeRef = useRef<number>(Date.now());
+  const deadlineRef = useRef<number>(Date.now() + totalSeconds * 1000);
 
   useEffect(() => {
     if (initialAttempt) {
@@ -108,6 +135,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
       setIsSubmitted(true);
       setAttemptResult(initialAttempt);
       setIsStarted(false);
+      setSavedProgressToResume(null);
     } else {
       const initSQ = Boolean(exam.shuffleQuestions);
       const initSO = Boolean(exam.shuffleOptions);
@@ -124,27 +152,70 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
       setIsSubmitted(false);
       setAttemptResult(null);
       setIsStarted(!previewMode);
-      setRemainingSeconds(exam.durationMinutes * 60);
-      startTimeRef.current = Date.now();
+      const nextDurationSec = exam.durationMinutes * 60;
+      setRemainingSeconds(nextDurationSec);
+      const now = Date.now();
+      startTimeRef.current = now;
+      deadlineRef.current = now + nextDurationSec * 1000;
+
+      if (!previewMode) {
+        try {
+          const raw = localStorage.getItem(getAttemptStorageKey(exam.id));
+          if (raw) {
+            const parsed = JSON.parse(raw) as SavedInProgressAttempt;
+            if (
+              parsed &&
+              parsed.examId === exam.id &&
+              typeof parsed.deadline === 'number' &&
+              parsed.deadline > now &&
+              parsed.answers &&
+              Object.keys(parsed.answers).length > 0
+            ) {
+              setSavedProgressToResume(parsed);
+            } else {
+              localStorage.removeItem(getAttemptStorageKey(exam.id));
+              setSavedProgressToResume(null);
+            }
+          } else {
+            setSavedProgressToResume(null);
+          }
+        } catch {
+          setSavedProgressToResume(null);
+        }
+      } else {
+        setSavedProgressToResume(null);
+      }
     }
     setResultFilter('all');
     setMobilePaletteOpen(false);
+    setPendingShuffleAction(null);
   }, [exam.id, initialAttempt, previewMode]);
 
+  // Timestamp-based timer that stays accurate across background tabs
   useEffect(() => {
     if (!isStarted || isSubmitted) return;
 
-    const timer = window.setInterval(() => {
-      setRemainingSeconds((prev) => {
-        if (prev <= 1) {
-          window.clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    const updateRemainingFromDeadline = () => {
+      const nextRem = Math.max(
+        0,
+        Math.round((deadlineRef.current - Date.now()) / 1000)
+      );
+      setRemainingSeconds(nextRem);
+    };
 
-    return () => window.clearInterval(timer);
+    updateRemainingFromDeadline();
+    const timer = window.setInterval(updateRemainingFromDeadline, 1000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        updateRemainingFromDeadline();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [isStarted, isSubmitted]);
 
   useEffect(() => {
@@ -153,10 +224,138 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     }
   }, [remainingSeconds, isStarted, isSubmitted]);
 
+  // Debounced auto-save of in-progress attempt to localStorage (excluding base64 images)
+  useEffect(() => {
+    if (!isStarted || isSubmitted || previewMode || savedProgressToResume) return;
+    if (Object.keys(answers).length === 0) return;
+
+    const handle = window.setTimeout(() => {
+      try {
+        const payload: SavedInProgressAttempt = {
+          examId: exam.id,
+          answers,
+          confirmedQuestions,
+          questionOrder: activeQuestions.map((q) => ({
+            id: q.id,
+            options: q.options,
+            correctAnswer: q.correctAnswer,
+            correctAnswers: q.correctAnswers,
+          })),
+          deadline: deadlineRef.current,
+          startedAt: startTimeRef.current,
+          shuffleQuestions,
+          shuffleOptions,
+        };
+        localStorage.setItem(getAttemptStorageKey(exam.id), JSON.stringify(payload));
+      } catch {
+        // ignore quota errors
+      }
+    }, 500);
+
+    return () => window.clearTimeout(handle);
+  }, [
+    exam.id,
+    isStarted,
+    isSubmitted,
+    previewMode,
+    savedProgressToResume,
+    answers,
+    confirmedQuestions,
+    activeQuestions,
+    shuffleQuestions,
+    shuffleOptions,
+  ]);
+
+  // Warn before closing/reloading tab when user has answered at least 1 question
+  useEffect(() => {
+    const hasProgress =
+      isStarted && !isSubmitted && Object.keys(answers).length > 0;
+    if (!hasProgress) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isStarted, isSubmitted, answers]);
+
+  // Escape key handler for dialogs & drawers
+  useEffect(() => {
+    if (
+      !zoomedImageUrl &&
+      !mobilePaletteOpen &&
+      !pendingShuffleAction &&
+      !savedProgressToResume
+    ) {
+      return;
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (zoomedImageUrl) setZoomedImageUrl(null);
+        else if (pendingShuffleAction) setPendingShuffleAction(null);
+        else if (mobilePaletteOpen) setMobilePaletteOpen(false);
+        else if (savedProgressToResume) setSavedProgressToResume(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [zoomedImageUrl, mobilePaletteOpen, pendingShuffleAction, savedProgressToResume]);
+
+  const handleResumeSavedProgress = (saved: SavedInProgressAttempt) => {
+    const baseById = new Map<string, Question>();
+    for (const q of exam.questions) {
+      baseById.set(q.id, q);
+    }
+    const restoredQuestions: Question[] = [];
+    for (const item of saved.questionOrder || []) {
+      const base = baseById.get(item.id);
+      if (base) {
+        restoredQuestions.push({
+          ...base,
+          options: item.options || base.options,
+          correctAnswer: item.correctAnswer || base.correctAnswer,
+          correctAnswers: item.correctAnswers ?? base.correctAnswers,
+        });
+      }
+    }
+    if (restoredQuestions.length === exam.questions.length) {
+      setActiveQuestions(
+        restoredQuestions.map((q, idx) => ({ ...q, number: idx + 1 }))
+      );
+    }
+    setShuffleQuestions(Boolean(saved.shuffleQuestions));
+    setShuffleOptions(Boolean(saved.shuffleOptions));
+    setAnswers(saved.answers || {});
+    setConfirmedQuestions(saved.confirmedQuestions || {});
+    deadlineRef.current = saved.deadline;
+    startTimeRef.current = saved.startedAt || Date.now();
+    setRemainingSeconds(
+      Math.max(1, Math.round((saved.deadline - Date.now()) / 1000))
+    );
+    setIsStarted(true);
+    setIsSubmitted(false);
+    setSavedProgressToResume(null);
+  };
+
+  const handleDiscardSavedProgress = () => {
+    try {
+      localStorage.removeItem(getAttemptStorageKey(exam.id));
+    } catch {
+      // ignore
+    }
+    setSavedProgressToResume(null);
+    const now = Date.now();
+    startTimeRef.current = now;
+    deadlineRef.current = now + exam.durationMinutes * 60 * 1000;
+    setRemainingSeconds(exam.durationMinutes * 60);
+  };
+
   const ensureExamStarted = () => {
     if (!isStarted) {
       setIsStarted(true);
-      startTimeRef.current = Date.now();
+      const now = Date.now();
+      startTimeRef.current = now;
+      deadlineRef.current = now + exam.durationMinutes * 60 * 1000;
     }
   };
 
@@ -164,7 +363,9 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     setIsStarted(true);
     setIsSubmitted(false);
     setAttemptResult(null);
-    startTimeRef.current = Date.now();
+    const now = Date.now();
+    startTimeRef.current = now;
+    deadlineRef.current = now + exam.durationMinutes * 60 * 1000;
   };
 
   const handleSelectSingleOption = (questionId: string, optionKey: OptionKey) => {
@@ -230,6 +431,11 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
 
   const handleSubmitExam = () => {
     if (isSubmitted) return;
+    try {
+      localStorage.removeItem(getAttemptStorageKey(exam.id));
+    } catch {
+      // ignore
+    }
     const elapsedSeconds = Math.max(
       1,
       Math.round((Date.now() - startTimeRef.current) / 1000)
@@ -248,6 +454,11 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   };
 
   const applyShuffleAndReset = (nextSQ: boolean, nextSO: boolean) => {
+    try {
+      localStorage.removeItem(getAttemptStorageKey(exam.id));
+    } catch {
+      // ignore
+    }
     setShuffleQuestions(nextSQ);
     setShuffleOptions(nextSO);
     const nextExam = createShuffledExam(exam, {
@@ -260,11 +471,27 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     setIsSubmitted(false);
     setAttemptResult(null);
     setResultFilter('all');
-    setRemainingSeconds(exam.durationMinutes * 60);
-    startTimeRef.current = Date.now();
+    const nextDurationSec = exam.durationMinutes * 60;
+    setRemainingSeconds(nextDurationSec);
+    const now = Date.now();
+    startTimeRef.current = now;
+    deadlineRef.current = now + nextDurationSec * 1000;
+  };
+
+  const requestShuffle = (nextSQ: boolean, nextSO: boolean) => {
+    if (isSubmitted || Object.keys(answers).length === 0) {
+      applyShuffleAndReset(nextSQ, nextSO);
+      return;
+    }
+    setPendingShuffleAction({ nextSQ, nextSO });
   };
 
   const handleRetakeExam = () => {
+    try {
+      localStorage.removeItem(getAttemptStorageKey(exam.id));
+    } catch {
+      // ignore
+    }
     const nextExam = createShuffledExam(exam, {
       shuffleQuestions,
       shuffleOptions,
@@ -275,10 +502,13 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     setIsSubmitted(false);
     setAttemptResult(null);
     setIsStarted(true);
-    setRemainingSeconds(exam.durationMinutes * 60);
+    const nextDurationSec = exam.durationMinutes * 60;
+    setRemainingSeconds(nextDurationSec);
     setResultFilter('all');
     setMobilePaletteOpen(false);
-    startTimeRef.current = Date.now();
+    const now = Date.now();
+    startTimeRef.current = now;
+    deadlineRef.current = now + nextDurationSec * 1000;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -418,9 +648,132 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
             <img
               src={zoomedImageUrl}
               alt="Hình minh hoạ câu hỏi phóng to"
+              loading="lazy"
+              decoding="async"
               referrerPolicy="no-referrer"
               className="max-w-full max-h-[82vh] object-contain mx-auto rounded-lg"
             />
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Dialog before Shuffling when Answers Exist */}
+      {pendingShuffleAction && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="shuffle-confirm-title"
+          onClick={() => setPendingShuffleAction(null)}
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 space-y-4"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-600 flex items-center justify-center shrink-0">
+                  <Shuffle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3
+                    id="shuffle-confirm-title"
+                    className="text-base font-extrabold text-slate-900"
+                  >
+                    Xác nhận đổi chế độ xáo trộn?
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Bạn đã trả lời {answeredCount}/{exam.questions.length} câu hỏi
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingShuffleAction(null)}
+                aria-label="Đóng thông báo xáo trộn"
+                className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+              Đổi chế độ xáo trộn sẽ <strong>xóa toàn bộ đáp án đã chọn</strong> và{' '}
+              <strong>đặt lại đồng hồ</strong> về ban đầu. Tiếp tục?
+            </p>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setPendingShuffleAction(null)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+              >
+                Huỷ bỏ
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const { nextSQ, nextSO } = pendingShuffleAction;
+                  setPendingShuffleAction(null);
+                  applyShuffleAndReset(nextSQ, nextSO);
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+              >
+                <Shuffle className="w-3.5 h-3.5" />
+                <span>Tiếp tục xáo trộn</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Resume Saved In-Progress Attempt Dialog */}
+      {savedProgressToResume && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="resume-attempt-title"
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-blue-50 border border-blue-200 text-[#2563eb] flex items-center justify-center shrink-0">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <h3
+                  id="resume-attempt-title"
+                  className="text-base font-extrabold text-slate-900"
+                >
+                  Tiếp tục bài đang làm dở?
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Đã lưu tự động {Object.keys(savedProgressToResume.answers).length} câu đã chọn
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+              Hệ thống tìm thấy bài làm đang dở của bạn cho đề{' '}
+              <strong>{exam.title}</strong>. Bạn muốn tiếp tục làm tiếp hay bắt đầu lại từ đầu?
+            </p>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={handleDiscardSavedProgress}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+              >
+                Làm lại từ đầu
+              </button>
+              <button
+                type="button"
+                onClick={() => handleResumeSavedProgress(savedProgressToResume)}
+                className="px-4 py-2.5 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+              >
+                Tiếp tục làm bài
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -496,7 +849,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                       type="button"
                       role="switch"
                       aria-checked={shuffleQuestions}
-                      onClick={() => applyShuffleAndReset(!shuffleQuestions, shuffleOptions)}
+                      onClick={() => requestShuffle(!shuffleQuestions, shuffleOptions)}
                       className={`w-10 h-5 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
                         shuffleQuestions ? 'bg-[#2563eb]' : 'bg-slate-300'
                       }`}
@@ -517,7 +870,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                       type="button"
                       role="switch"
                       aria-checked={shuffleOptions}
-                      onClick={() => applyShuffleAndReset(shuffleQuestions, !shuffleOptions)}
+                      onClick={() => requestShuffle(shuffleQuestions, !shuffleOptions)}
                       className={`w-10 h-5 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
                         shuffleOptions ? 'bg-[#2563eb]' : 'bg-slate-300'
                       }`}
@@ -783,7 +1136,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                     role="switch"
                     aria-checked={shuffleQuestions}
                     aria-label="Xáo trộn câu hỏi (Mobile)"
-                    onClick={() => applyShuffleAndReset(!shuffleQuestions, shuffleOptions)}
+                    onClick={() => requestShuffle(!shuffleQuestions, shuffleOptions)}
                     className={`w-10 h-5 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
                       shuffleQuestions ? 'bg-[#2563eb]' : 'bg-slate-300'
                     }`}
@@ -805,7 +1158,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                     role="switch"
                     aria-checked={shuffleOptions}
                     aria-label="Xáo trộn đáp án (A, B, C, D) (Mobile)"
-                    onClick={() => applyShuffleAndReset(shuffleQuestions, !shuffleOptions)}
+                    onClick={() => requestShuffle(shuffleQuestions, !shuffleOptions)}
                     className={`w-10 h-5 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
                       shuffleOptions ? 'bg-[#2563eb]' : 'bg-slate-300'
                     }`}
@@ -983,6 +1336,8 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                             <img
                               src={question.imageUrl}
                               alt={`Hình minh hoạ câu ${question.number}`}
+                              loading="lazy"
+                              decoding="async"
                               referrerPolicy="no-referrer"
                               onClick={() => setZoomedImageUrl(question.imageUrl || null)}
                               className="max-h-60 sm:max-h-64 w-auto max-w-full rounded-xl object-contain cursor-zoom-in"
@@ -1395,7 +1750,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                             aria-checked={shuffleQuestions}
                             aria-label="Xáo trộn câu hỏi"
                             onClick={() =>
-                              applyShuffleAndReset(!shuffleQuestions, shuffleOptions)
+                              requestShuffle(!shuffleQuestions, shuffleOptions)
                             }
                             className={`w-10 h-5 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
                               shuffleQuestions ? 'bg-[#2563eb]' : 'bg-slate-300'
@@ -1419,7 +1774,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                             aria-checked={shuffleOptions}
                             aria-label="Xáo trộn đáp án"
                             onClick={() =>
-                              applyShuffleAndReset(shuffleQuestions, !shuffleOptions)
+                              requestShuffle(shuffleQuestions, !shuffleOptions)
                             }
                             className={`w-10 h-5 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
                               shuffleOptions ? 'bg-[#2563eb]' : 'bg-slate-300'
@@ -1435,7 +1790,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => applyShuffleAndReset(true, true)}
+                          onClick={() => requestShuffle(true, true)}
                           className="w-full py-1.5 px-3 rounded-lg border border-indigo-200 bg-white hover:bg-indigo-50 text-xs font-bold text-[#2563eb] inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                         >
                           <Shuffle className="w-3.5 h-3.5" />

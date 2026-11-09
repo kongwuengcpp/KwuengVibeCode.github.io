@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   FileUp,
   SquarePen,
@@ -34,8 +34,14 @@ import {
 } from '../utils/examParser';
 import {
   compressImageDataUriIfNeeded,
-  extractTextFromDocxBuffer,
+  extractDocxWithReport,
+  MAX_SINGLE_IMAGE_BYTES,
 } from '../utils/docxHelper';
+import {
+  estimateExamBytes,
+  MAX_EXAM_DOC_BYTES,
+  MAX_QUESTIONS,
+} from '../firebase';
 import { QuestionTableEditor } from './QuestionDataTable';
 
 interface AutoResizeTextareaProps
@@ -85,7 +91,11 @@ const AutoResizeTextarea: React.FC<AutoResizeTextareaProps> = ({
 interface CreateExamViewProps {
   branding?: SiteBranding;
   editingExam?: Exam | null;
-  onSaveExam: (exam: Exam, startImmediately: boolean) => void;
+  onSaveExam: (
+    exam: Exam,
+    startImmediately: boolean,
+    saveOfflineOnly?: boolean
+  ) => Promise<{ ok: boolean; error?: string; offlineAvailable?: boolean }>;
   onCancel: () => void;
 }
 
@@ -121,6 +131,7 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
   const [selectedFileName, setSelectedFileName] = useState<string>('');
   const [rawExtractedText, setRawExtractedText] = useState<string>('');
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
+  const [extractProgress, setExtractProgress] = useState<string>('');
   const [digitizeNotice, setDigitizeNotice] = useState<string>('');
   const [digitizeWarnings, setDigitizeWarnings] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -159,6 +170,42 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
         ]
   );
   const [formError, setFormError] = useState<string>('');
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [canSaveOffline, setCanSaveOffline] = useState<boolean>(false);
+
+  const estimatedBytes = useMemo(() => {
+    const draftExam: Exam = {
+      id: editingExam ? editingExam.id : 'exam-draft',
+      examCode: editingExam?.examCode || '10000',
+      title: title.trim() || 'Đề nháp',
+      category,
+      durationMinutes: Math.max(1, Number(durationMinutes) || 45),
+      createdAt: editingExam?.createdAt || '01/01/2026',
+      uploadTime: editingExam?.uploadTime || '12:00',
+      isFavorite: Boolean(editingExam?.isFavorite),
+      shuffleQuestions,
+      shuffleOptions,
+      sourceType: selectedFileName.toLowerCase().endsWith('.docx') ? 'docx' : 'manual',
+      fileName: selectedFileName || editingExam?.fileName,
+      questions,
+    };
+    return estimateExamBytes(draftExam);
+  }, [
+    editingExam,
+    title,
+    category,
+    durationMinutes,
+    shuffleQuestions,
+    shuffleOptions,
+    selectedFileName,
+    questions,
+  ]);
+
+  const estimatedKb = Math.ceil(estimatedBytes / 1024);
+  const maxKb = Math.floor(MAX_EXAM_DOC_BYTES / 1024);
+  const usageRatio = estimatedBytes / MAX_EXAM_DOC_BYTES;
+  const isOverSizeLimit =
+    estimatedBytes > MAX_EXAM_DOC_BYTES || questions.length > MAX_QUESTIONS;
 
   const handleTitleChangeWithAutoSubject = (nextTitle: string) => {
     setTitle(nextTitle);
@@ -170,8 +217,22 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
 
   const handleDocxFileSelect = async (file: File) => {
     setFormError('');
+    setCanSaveOffline(false);
+    setDigitizeNotice('');
     setDigitizeWarnings([]);
+
+    if (activeTab === 'docx' && !file.name.toLowerCase().endsWith('.docx')) {
+      setFormError(
+        'Chỉ nhận file Word .docx (không hỗ trợ file .doc cũ hoặc định dạng khác). Hãy mở bằng Word và chọn Save As -> .docx.'
+      );
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
     setIsExtracting(true);
+    setExtractProgress('Đang đọc file...');
     setSelectedFileName(file.name);
 
     const cleanName = file.name.replace(/\.(docx|pdf|txt)$/i, '').replace(/[_-]+/g, ' ');
@@ -183,15 +244,28 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
     try {
       if (file.name.toLowerCase().endsWith('.docx')) {
         const buffer = await file.arrayBuffer();
-        const text = await extractTextFromDocxBuffer(buffer);
-        setRawExtractedText(text);
-        const previewParse = parseExamText(text);
+        const report = await extractDocxWithReport(buffer, {
+          onProgress: (current, total) => {
+            setExtractProgress(`Đang nén ảnh ${current}/${total}...`);
+          },
+        });
+        setRawExtractedText(report.text);
+        const previewParse = parseExamText(report.text);
         if (!title.trim()) {
           setTitle(cleanName);
         }
-        setDigitizeNotice(
-          `Đã đọc thành công file Word "${file.name}" (${previewParse.questions.length} câu hỏi: bao gồm Trắc nghiệm, Đúng/Sai nhiều lựa chọn, Điền từ & Hình ảnh). Nhấn "Số hoá ngay" để kiểm tra và lưu đề.`
-        );
+        const combinedWarnings = [...report.warnings, ...previewParse.warnings];
+        setDigitizeWarnings(combinedWarnings);
+
+        if (previewParse.questions.length === 0) {
+          setFormError(
+            `Đã đọc file "${file.name}" nhưng phát hiện 0 câu hỏi. Hãy kiểm tra định dạng bắt đầu bằng "Câu 1: ..." hoặc "Câu 1. ...".`
+          );
+        } else {
+          setDigitizeNotice(
+            `Đọc được ${previewParse.questions.length} câu, ${report.imageCount} ảnh, ${report.skippedImages} ảnh bị bỏ qua từ "${file.name}". Nhấn "Số hoá ngay" để kiểm tra và lưu đề.`
+          );
+        }
       } else {
         const text = await file.text();
         setRawExtractedText(text);
@@ -199,14 +273,25 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
         if (!title.trim()) {
           setTitle(cleanName);
         }
-        setDigitizeNotice(
-          `Đã đọc tài liệu "${file.name}" (${previewParse.questions.length} câu hỏi). Nhấn "Số hoá ngay" để tiếp tục.`
-        );
+        setDigitizeWarnings(previewParse.warnings);
+        if (previewParse.questions.length === 0) {
+          setFormError(
+            `Đã đọc tài liệu "${file.name}" nhưng phát hiện 0 câu hỏi. Hãy đảm bảo mỗi câu bắt đầu bằng "Câu 1: ...".`
+          );
+        } else {
+          setDigitizeNotice(
+            `Đã đọc tài liệu "${file.name}" (${previewParse.questions.length} câu hỏi). Nhấn "Số hoá ngay" để tiếp tục.`
+          );
+        }
       }
     } catch {
       setFormError('Không thể đọc file Word (.docx) này. Vui lòng kiểm tra lại định dạng file.');
     } finally {
       setIsExtracting(false);
+      setExtractProgress('');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -216,6 +301,7 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
     setDigitizeNotice('');
     setDigitizeWarnings([]);
     setFormError('');
+    setCanSaveOffline(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -242,7 +328,13 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
     }
 
     setQuestions(organizeQuestionsBySection(result.questions));
-    setDigitizeWarnings(result.warnings);
+    setDigitizeWarnings((prev) => {
+      const merged = [...prev];
+      for (const w of result.warnings) {
+        if (!merged.includes(w)) merged.push(w);
+      }
+      return merged;
+    });
     const nextTitle = title.trim()
       ? title.trim()
       : selectedFileName
@@ -301,11 +393,30 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
     const reader = new FileReader();
     reader.onload = async () => {
       if (typeof reader.result === 'string') {
-        const compressed = await compressImageDataUriIfNeeded(reader.result);
-        handleUpdateQuestion(index, (old) => ({
-          ...old,
-          imageUrl: compressed,
-        }));
+        const compressed = await compressImageDataUriIfNeeded(
+          reader.result,
+          MAX_SINGLE_IMAGE_BYTES
+        );
+        setQuestions((prev) => {
+          const next = prev.map((q, idx) =>
+            idx === index ? { ...q, imageUrl: compressed } : q
+          );
+          const nextBytes = estimateExamBytes({
+            id: editingExam ? editingExam.id : 'exam-draft',
+            title: title.trim() || 'Đề nháp',
+            category,
+            durationMinutes: Math.max(1, Number(durationMinutes) || 45),
+            createdAt: '01/01/2026',
+            isFavorite: false,
+            questions: next,
+          });
+          if (nextBytes > MAX_EXAM_DOC_BYTES) {
+            setFormError(
+              `Tổng dung lượng đề (${Math.ceil(nextBytes / 1024)} KB) đã vượt giới hạn ${maxKb} KB của Cloud sau khi thêm ảnh câu ${index + 1}. Hãy xoá bớt ảnh hoặc dùng ảnh nhẹ hơn.`
+            );
+          }
+          return next;
+        });
       }
     };
     reader.readAsDataURL(file);
@@ -355,14 +466,22 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
     );
   };
 
-  const handleFinalSave = (startImmediately: boolean) => {
+  const handleFinalSave = async (startImmediately: boolean, saveOfflineOnly = false) => {
+    if (isSaving) return;
     setFormError('');
+    setCanSaveOffline(false);
     if (!title.trim()) {
       setFormError('Vui lòng nhập tên đề thi.');
       return;
     }
     if (questions.length === 0) {
       setFormError('Đề thi phải có ít nhất 1 câu hỏi.');
+      return;
+    }
+    if (questions.length > MAX_QUESTIONS) {
+      setFormError(
+        `Đề có ${questions.length} câu hỏi, vượt giới hạn tối đa ${MAX_QUESTIONS} câu/đề. Hãy tách thành nhiều đề nhỏ hơn.`
+      );
       return;
     }
 
@@ -400,7 +519,7 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
       isFavorite: editingExam ? editingExam.isFavorite : false,
       shuffleQuestions,
       shuffleOptions,
-      sourceType: selectedFileName.endsWith('.docx') ? 'docx' : 'manual',
+      sourceType: selectedFileName.toLowerCase().endsWith('.docx') ? 'docx' : 'manual',
       fileName: selectedFileName || editingExam?.fileName,
       questions: organizedForSave.map((q, idx) => {
         const qType: QuestionType = q.type || 'single';
@@ -424,7 +543,17 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
       }),
     };
 
-    onSaveExam(newExam, startImmediately);
+    setIsSaving(true);
+    try {
+      const res = await onSaveExam(newExam, startImmediately, saveOfflineOnly);
+      if (!res.ok) {
+        setFormError(res.error || 'Không thể lưu đề thi lên Cloud. Vui lòng thử lại.');
+        setCanSaveOffline(Boolean(res.offlineAvailable));
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -454,21 +583,34 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             {mode === 'manual' && (
               <>
+                <span
+                  className={`hidden md:inline-flex items-center px-2.5 py-1 rounded-lg border text-[11px] font-bold tabular-nums ${
+                    usageRatio > 1 || questions.length > MAX_QUESTIONS
+                      ? 'bg-rose-50 border-rose-200 text-rose-700'
+                      : usageRatio > 0.7
+                      ? 'bg-amber-50 border-amber-200 text-amber-800'
+                      : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                  }`}
+                >
+                  Dung lượng đề: {estimatedKb} KB / {maxKb} KB
+                </span>
                 <button
                   type="button"
-                  onClick={() => handleFinalSave(false)}
-                  className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer whitespace-nowrap"
+                  disabled={isSaving || isOverSizeLimit}
+                  onClick={() => void handleFinalSave(false)}
+                  className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <Save className="w-3.5 h-3.5" />
-                  <span>Lưu đề thi</span>
+                  <span>{isSaving ? 'Đang lưu...' : 'Lưu đề thi'}</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleFinalSave(true)}
-                  className="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
+                  disabled={isSaving || isOverSizeLimit}
+                  onClick={() => void handleFinalSave(true)}
+                  className="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <Play className="w-3.5 h-3.5 text-[#2563eb]" />
-                  <span>Lưu & Làm bài ngay</span>
+                  <span>{isSaving ? 'Đang lưu...' : 'Lưu & Làm bài ngay'}</span>
                 </button>
               </>
             )}
@@ -659,6 +801,17 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                     </div>
                   )}
 
+                  {digitizeWarnings.length > 0 && (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-xs space-y-1">
+                      <div className="font-bold">Lưu ý khi trích xuất:</div>
+                      <ul className="list-disc pl-4 space-y-0.5">
+                        {digitizeWarnings.slice(0, 6).map((w, i) => (
+                          <li key={i}>{w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
                   {/* Quick Metadata Bar inside Digitize Tab */}
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-white p-4 rounded-xl border border-slate-200/80">
                     <div className="md:col-span-2">
@@ -753,7 +906,9 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                             disabled={isExtracting}
                             className="px-5 py-2.5 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
                           >
-                            {isExtracting ? 'Đang đọc file .docx...' : 'Chọn file Word (.docx)'}
+                            {isExtracting
+                              ? extractProgress || 'Đang đọc file .docx...'
+                              : 'Chọn file Word (.docx)'}
                           </button>
                         </div>
 
@@ -872,30 +1027,66 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span
+                      className={`inline-flex items-center px-3 py-1.5 rounded-xl border text-xs font-bold tabular-nums ${
+                        usageRatio > 1 || questions.length > MAX_QUESTIONS
+                          ? 'bg-rose-50 border-rose-200 text-rose-700'
+                          : usageRatio > 0.7
+                          ? 'bg-amber-50 border-amber-200 text-amber-800'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                      }`}
+                    >
+                      Dung lượng đề: {estimatedKb} KB / {maxKb} KB
+                    </span>
                     <button
                       type="button"
-                      onClick={() => handleFinalSave(false)}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                      disabled={isSaving || isOverSizeLimit}
+                      onClick={() => void handleFinalSave(false)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
                     >
                       <Save className="w-3.5 h-3.5" />
-                      <span>Lưu đề thi</span>
+                      <span>{isSaving ? 'Đang lưu...' : 'Lưu đề thi'}</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleFinalSave(true)}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                      disabled={isSaving || isOverSizeLimit}
+                      onClick={() => void handleFinalSave(true)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
                     >
                       <Play className="w-3.5 h-3.5" />
-                      <span>Lưu & Làm bài ngay</span>
+                      <span>{isSaving ? 'Đang lưu...' : 'Lưu & Làm bài ngay'}</span>
                     </button>
                   </div>
                 </div>
 
-                {formError && (
-                  <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-4 py-3 text-xs font-medium flex items-center gap-2">
+                {isOverSizeLimit && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-4 py-3 text-xs font-semibold flex items-center gap-2">
                     <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{formError}</span>
+                    <span>
+                      {questions.length > MAX_QUESTIONS
+                        ? `Đề thi có ${questions.length} câu, vượt giới hạn tối đa ${MAX_QUESTIONS} câu/đề. Hãy tách thành nhiều đề nhỏ hơn.`
+                        : `Dung lượng đề (${estimatedKb} KB) vượt giới hạn ${maxKb} KB của Cloud. Hãy xoá bớt ảnh hoặc dùng ảnh nhẹ hơn để có thể lưu.`}
+                    </span>
+                  </div>
+                )}
+
+                {formError && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-4 py-3 text-xs font-medium flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{formError}</span>
+                    </div>
+                    {canSaveOffline && (
+                      <button
+                        type="button"
+                        disabled={isSaving}
+                        onClick={() => void handleFinalSave(false, true)}
+                        className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors cursor-pointer shrink-0"
+                      >
+                        Lưu tạm trên máy
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -1305,6 +1496,8 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                             <img
                               src={q.imageUrl}
                               alt={`Ảnh câu ${index + 1}`}
+                              loading="lazy"
+                              decoding="async"
                               referrerPolicy="no-referrer"
                               className="max-h-48 rounded-lg border border-slate-200 bg-white p-1 object-contain"
                             />
@@ -1522,7 +1715,18 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                     </button>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span
+                      className={`inline-flex items-center px-3 py-1.5 rounded-xl border text-xs font-bold tabular-nums ${
+                        usageRatio > 1 || questions.length > MAX_QUESTIONS
+                          ? 'bg-rose-50 border-rose-200 text-rose-700'
+                          : usageRatio > 0.7
+                          ? 'bg-amber-50 border-amber-200 text-amber-800'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                      }`}
+                    >
+                      Dung lượng đề: {estimatedKb} KB / {maxKb} KB
+                    </span>
                     <button
                       type="button"
                       onClick={onCancel}
@@ -1532,17 +1736,19 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleFinalSave(false)}
-                      className="px-4 py-2 rounded-xl bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-bold transition-colors cursor-pointer"
+                      disabled={isSaving || isOverSizeLimit}
+                      onClick={() => void handleFinalSave(false)}
+                      className="px-4 py-2 rounded-xl bg-white hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-300 text-slate-800 text-xs font-bold transition-colors cursor-pointer"
                     >
-                      Lưu đề thi
+                      {isSaving ? 'Đang lưu...' : 'Lưu đề thi'}
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleFinalSave(true)}
-                      className="px-5 py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                      disabled={isSaving || isOverSizeLimit}
+                      onClick={() => void handleFinalSave(true)}
+                      className="px-5 py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
                     >
-                      Lưu & Làm bài ngay
+                      {isSaving ? 'Đang lưu...' : 'Lưu & Làm bài ngay'}
                     </button>
                   </div>
                 </div>

@@ -1,10 +1,19 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { ShieldOff, ArrowLeft } from 'lucide-react';
+import React, {
+  Component,
+  ErrorInfo,
+  ReactNode,
+  Suspense,
+  lazy,
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+} from 'react';
+import { ShieldOff, ArrowLeft, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Exam, ExamAttempt, SiteBranding, DEFAULT_SITE_BRANDING } from './types/exam';
 import { INITIAL_ATTEMPTS, INITIAL_EXAMS } from './data/initialExams';
 import { DashboardView } from './components/DashboardView';
 import { ExamTakeView } from './components/ExamTakeView';
-import { CreateExamView } from './components/CreateExamView';
 import {
   ADMIN_STORAGE_KEY,
   CUSTOM_ADMIN_KEY_STORAGE,
@@ -21,7 +30,84 @@ import {
   syncAllToCloud,
   IGNORED_EXAM_IDS,
   sanitizeDocId,
+  isOfflineErrorMessage,
 } from './firebase';
+
+const CreateExamView = lazy(() =>
+  import('./components/CreateExamView').then((m) => ({
+    default: m.CreateExamView,
+  }))
+);
+
+interface ErrorBoundaryProps {
+  onResetToLibrary: () => void;
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  errorMessage: string;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+
+  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
+    return {
+      hasError: true,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  componentDidCatch(error: unknown, errorInfo: ErrorInfo) {
+    console.error('[ErrorBoundary] Lỗi giao diện:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <main className="min-h-screen bg-[#f8fafc] flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-white rounded-3xl border border-slate-200 shadow-xl p-8 text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-7 h-7" />
+            </div>
+            <h1 className="text-xl font-extrabold text-slate-900">
+              Đã xảy ra lỗi hiển thị ngoài ý muốn
+            </h1>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Trang gặp sự cố khi hiển thị dữ liệu ({this.state.errorMessage || 'Lỗi không xác định'}). Bạn có thể tải lại trang hoặc quay về thư viện đề thi.
+            </p>
+            <div className="pt-2 flex flex-wrap items-center justify-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Tải lại trang</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  this.setState({ hasError: false, errorMessage: '' });
+                  this.props.onResetToLibrary();
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Về thư viện</span>
+              </button>
+            </div>
+          </div>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const EXAMS_STORAGE_KEY = 'luyende_online_exams_prod_v1';
 const DELETED_EXAMS_STORAGE_KEY = 'luyende_deleted_exam_ids_v1';
@@ -98,7 +184,11 @@ function loadPendingSaveExamIds(): Set<string> {
 export default function App() {
   const deletedExamIdsRef = useRef<Set<string>>(loadDeletedExamIds());
   const pendingSaveExamIdsRef = useRef<Set<string>>(loadPendingSaveExamIds());
+  const [unsyncedExamIds, setUnsyncedExamIds] = useState<string[]>(() =>
+    Array.from(pendingSaveExamIdsRef.current)
+  );
   const lastSavedExamRef = useRef<Exam | null>(null);
+  const feedbackTimerRef = useRef<number | null>(null);
 
   const persistDeletedIds = useCallback(() => {
     try {
@@ -112,13 +202,26 @@ export default function App() {
   }, []);
 
   const persistPendingSaveIds = useCallback(() => {
+    const arr = Array.from(pendingSaveExamIdsRef.current);
+    setUnsyncedExamIds(arr);
     try {
-      localStorage.setItem(
-        PENDING_SAVE_STORAGE_KEY,
-        JSON.stringify(Array.from(pendingSaveExamIdsRef.current))
-      );
+      localStorage.setItem(PENDING_SAVE_STORAGE_KEY, JSON.stringify(arr));
     } catch {
       // ignore
+    }
+  }, []);
+
+  const showFeedback = useCallback((message: string | null, autoDismissMs?: number) => {
+    if (feedbackTimerRef.current) {
+      window.clearTimeout(feedbackTimerRef.current);
+      feedbackTimerRef.current = null;
+    }
+    setSyncFeedbackMessage(message);
+    if (message && autoDismissMs && autoDismissMs > 0) {
+      feedbackTimerRef.current = window.setTimeout(() => {
+        setSyncFeedbackMessage(null);
+        feedbackTimerRef.current = null;
+      }, autoDismissMs);
     }
   }, []);
 
@@ -193,6 +296,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
   const [cloudSynced, setCloudSynced] = useState<boolean>(false);
+  const [syncFeedbackMessage, setSyncFeedbackMessage] = useState<string | null>(null);
 
   const [branding, setBranding] = useState<SiteBranding>(() => {
     try {
@@ -209,43 +313,87 @@ export default function App() {
     return DEFAULT_SITE_BRANDING;
   });
 
-  const handleUpdateBranding = useCallback((newBranding: Partial<SiteBranding>) => {
-    setBranding((prev) => {
-      const updated = { ...prev, ...newBranding };
+  const brandingRef = useRef<SiteBranding>(branding);
+  brandingRef.current = branding;
+
+  const examsRef = useRef<Exam[]>(exams);
+  examsRef.current = exams;
+
+  const handleUpdateBranding = useCallback(
+    async (newBranding: Partial<SiteBranding>) => {
+      const updated: SiteBranding = { ...brandingRef.current, ...newBranding };
+      setBranding(updated);
       try {
         localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(updated));
       } catch {
         // ignore
       }
-      void saveSiteBrandingToCloud(updated).then(() => {
+      const res = await saveSiteBrandingToCloud(updated);
+      if (res.ok) {
         setCloudSynced(true);
-      });
-      return updated;
-    });
-  }, []);
+        showFeedback('✅ Đã lưu và đồng bộ thông tin trang lên Cloud.', 4000);
+      } else {
+        showFeedback(
+          `❌ Không thể lưu thông tin trang lên Cloud: ${res.error || 'Vui lòng thử lại.'}`
+        );
+      }
+    },
+    [showFeedback]
+  );
 
-  const [syncFeedbackMessage, setSyncFeedbackMessage] = useState<string | null>(null);
+  const handleRetrySyncExam = useCallback(
+    async (exam: Exam) => {
+      const canonicalId = sanitizeDocId(exam.id);
+      const res = await saveExamToCloud({ ...exam, id: canonicalId });
+      if (res.ok) {
+        pendingSaveExamIdsRef.current.delete(exam.id);
+        pendingSaveExamIdsRef.current.delete(canonicalId);
+        persistPendingSaveIds();
+        setCloudSynced(true);
+        showFeedback(`✅ Đã đồng bộ đề "${exam.title}" lên Cloud thành công!`, 4000);
+      } else {
+        showFeedback(
+          `❌ Đồng bộ lại đề "${exam.title}" thất bại: ${res.error || 'Lỗi không xác định'}`
+        );
+      }
+    },
+    [persistPendingSaveIds, showFeedback]
+  );
 
   const handleSyncCloud = useCallback(async () => {
     setIsSyncingCloud(true);
-    setSyncFeedbackMessage(null);
+    showFeedback(null);
     try {
-      const res = await syncAllToCloud(exams, branding);
+      const res = await syncAllToCloud(examsRef.current, brandingRef.current);
       if (res.success) {
+        pendingSaveExamIdsRef.current.clear();
+        persistPendingSaveIds();
         setCloudSynced(true);
-        setSyncFeedbackMessage(`✅ Đã đồng bộ thành công ${res.count} đề thi và giao diện lên Cloud!`);
+        showFeedback(
+          `✅ Đã đồng bộ thành công ${res.count} đề thi và giao diện lên Cloud!`,
+          5000
+        );
       } else {
-        setSyncFeedbackMessage(`⚠️ Lỗi đồng bộ: ${res.error || 'Vui lòng kiểm tra lại'}`);
+        for (const f of res.failed) {
+          pendingSaveExamIdsRef.current.add(sanitizeDocId(f.id));
+        }
+        persistPendingSaveIds();
+        const firstFail = res.failed[0]
+          ? ` (${res.failed[0].title}: ${res.failed[0].error})`
+          : '';
+        const brandingFail = res.brandingError
+          ? ` · Giao diện: ${res.brandingError}`
+          : '';
+        showFeedback(
+          `⚠️ Đồng bộ: ${res.count} đề thành công, ${res.failed.length} đề lỗi${firstFail}${brandingFail}`
+        );
       }
     } catch (err) {
-      setSyncFeedbackMessage(`❌ Lỗi: ${err instanceof Error ? err.message : String(err)}`);
+      showFeedback(`❌ Lỗi: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsSyncingCloud(false);
-      window.setTimeout(() => {
-        setSyncFeedbackMessage((prev) => (prev ? prev : null));
-      }, 5000);
     }
-  }, [exams, branding]);
+  }, [persistPendingSaveIds, showFeedback]);
 
   // Real-time Firestore listener for Site Branding (/settings/site_config)
   useEffect(() => {
@@ -259,15 +407,16 @@ export default function App() {
           // ignore
         }
       } else {
-        // Cloud has no branding document yet — if this browser has custom localStorage branding, push it up automatically
         try {
           const localSaved = localStorage.getItem(BRANDING_STORAGE_KEY);
           if (localSaved) {
             const parsed = JSON.parse(localSaved);
             if (parsed && typeof parsed === 'object') {
-              void saveSiteBrandingToCloud({ ...DEFAULT_SITE_BRANDING, ...parsed }).then(() => {
-                setCloudSynced(true);
-              });
+              void saveSiteBrandingToCloud({ ...DEFAULT_SITE_BRANDING, ...parsed }).then(
+                (r) => {
+                  if (r.ok) setCloudSynced(true);
+                }
+              );
             }
           }
         } catch {
@@ -294,9 +443,11 @@ export default function App() {
             IGNORED_EXAM_IDS.has(exam.id) ||
             IGNORED_EXAM_IDS.has(safeId)
           ) {
-            // If this browser explicitly deleted this exam, ensure it's also removed from Cloud
-            if (deletedExamIdsRef.current.has(exam.id) || deletedExamIdsRef.current.has(safeId)) {
-              void deleteExamFromCloud(exam.id).catch(() => {});
+            if (
+              deletedExamIdsRef.current.has(exam.id) ||
+              deletedExamIdsRef.current.has(safeId)
+            ) {
+              void deleteExamFromCloud(exam.id);
             }
             continue;
           }
@@ -315,7 +466,7 @@ export default function App() {
           }
         }
 
-        // Preserve any exam that was saved locally in this browser and not yet confirmed in Cloud snapshot
+        // Preserve any exam explicitly saved offline by Admin in this browser
         const inFlightLocal = localPrev.filter((e) => {
           if (!e || !e.id) return false;
           const sid = sanitizeDocId(e.id);
@@ -334,6 +485,33 @@ export default function App() {
     });
     return () => unsubscribe();
   }, [persistPendingSaveIds]);
+
+  // Auto-retry unsynced offline exams when Admin comes back online
+  useEffect(() => {
+    if (!isAdmin) return;
+    const retryPending = async () => {
+      if (pendingSaveExamIdsRef.current.size === 0) return;
+      const pendingIds = Array.from(pendingSaveExamIdsRef.current);
+      for (const id of pendingIds) {
+        const found = examsRef.current.find(
+          (e) => e.id === id || sanitizeDocId(e.id) === sanitizeDocId(id)
+        );
+        if (found) {
+          const res = await saveExamToCloud(found);
+          if (res.ok) {
+            pendingSaveExamIdsRef.current.delete(id);
+            pendingSaveExamIdsRef.current.delete(sanitizeDocId(id));
+            persistPendingSaveIds();
+          }
+        }
+      }
+    };
+    const onOnline = () => {
+      void retryPending();
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [isAdmin, persistPendingSaveIds]);
 
   // Sync document title with branding
   useEffect(() => {
@@ -374,10 +552,7 @@ export default function App() {
     []
   );
 
-  const examsRef = useRef<Exam[]>(exams);
-  examsRef.current = exams;
-
-  // Initial URL resolution and popstate listener (without resetting active views on background exam sync)
+  // Initial URL resolution and popstate listener
   useEffect(() => {
     syncRouteFromLocation(examsRef.current, isAdmin);
     const onPopState = () => syncRouteFromLocation(examsRef.current, isAdmin);
@@ -446,13 +621,13 @@ export default function App() {
       if (!isAdmin) {
         return '❌ Bạn cần đăng nhập Admin trước khi đổi thông tin trang (tiêu đề, tên tác giả, phiên bản, logo).';
       }
-      handleUpdateBranding(newBranding);
-      return `✅ Đã cập nhật và đồng bộ thông tin trang lên Cloud thành công!`;
+      void handleUpdateBranding(newBranding);
+      return `✅ Đã gửi yêu cầu cập nhật thông tin trang lên Cloud!`;
     };
 
     window.syncCloud = async () => {
       await handleSyncCloud();
-      return '✅ Đã đồng bộ toàn bộ đề thi và giao diện lên Cloud thành công!';
+      return '✅ Đã thực hiện đồng bộ đề thi và giao diện với Cloud!';
     };
 
     try {
@@ -474,7 +649,7 @@ export default function App() {
       'color: #22c55e; font-weight: bold; font-size: 13px;',
       'color: #94a3b8; font-size: 12px;'
     );
-  }, [isAdmin, exams, branding, handleUpdateBranding, handleSyncCloud]);
+  }, [isAdmin, handleUpdateBranding, handleSyncCloud]);
 
   useEffect(() => {
     try {
@@ -579,11 +754,15 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleSaveExam = (savedExam: Exam, startImmediately: boolean) => {
+  const handleSaveExam = async (
+    savedExam: Exam,
+    startImmediately: boolean,
+    saveOfflineOnly = false
+  ): Promise<{ ok: boolean; error?: string; offlineAvailable?: boolean }> => {
     if (!isAdmin) {
       setActiveView('forbidden');
       setForbiddenReason('Chỉ Admin mới được phép lưu đề thi.');
-      return;
+      return { ok: false, error: 'Chỉ Admin mới được phép lưu đề thi.' };
     }
 
     const canonicalId = sanitizeDocId(savedExam.id);
@@ -592,12 +771,67 @@ export default function App() {
       id: canonicalId,
     };
 
+    if (saveOfflineOnly) {
+      lastSavedExamRef.current = normalizedExam;
+      deletedExamIdsRef.current.delete(canonicalId);
+      deletedExamIdsRef.current.delete(savedExam.id);
+      persistDeletedIds();
+      pendingSaveExamIdsRef.current.add(canonicalId);
+      persistPendingSaveIds();
+
+      setExams((prev) => {
+        const exists = prev.some((e) => sanitizeDocId(e.id) === canonicalId);
+        const next = exists
+          ? prev.map((e) => (sanitizeDocId(e.id) === canonicalId ? normalizedExam : e))
+          : [normalizedExam, ...prev];
+        try {
+          localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+
+      setEditingExam(null);
+      showFeedback(
+        `⚠️ Đã lưu tạm đề "${normalizedExam.title}" trên máy (Chưa đồng bộ Cloud). Nhấn "Đồng bộ lại" khi có kết nối mạng.`
+      );
+
+      const base = getBasePathname();
+      if (startImmediately) {
+        window.history.pushState({}, '', `${base}?de=${encodeURIComponent(normalizedExam.id)}`);
+        setActiveExamId(normalizedExam.id);
+        setPreviewMode(false);
+        setReviewingAttempt(null);
+        setActiveView('take-exam');
+      } else {
+        window.history.pushState({}, '', `${base}?view=library`);
+        setIsLibraryOpen(true);
+        setActiveView('dashboard');
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return { ok: true };
+    }
+
+    const res = await saveExamToCloud(normalizedExam);
+    if (!res.ok) {
+      const errMsg = res.error || 'Không thể lưu đề thi lên Cloud.';
+      showFeedback(`❌ Không lưu được đề "${normalizedExam.title}" lên Cloud: ${errMsg}`);
+      return {
+        ok: false,
+        error: errMsg,
+        offlineAvailable: isOfflineErrorMessage(errMsg),
+      };
+    }
+
     lastSavedExamRef.current = normalizedExam;
     deletedExamIdsRef.current.delete(canonicalId);
     deletedExamIdsRef.current.delete(savedExam.id);
     persistDeletedIds();
-    pendingSaveExamIdsRef.current.add(canonicalId);
+    pendingSaveExamIdsRef.current.delete(canonicalId);
+    pendingSaveExamIdsRef.current.delete(savedExam.id);
     persistPendingSaveIds();
+    setCloudSynced(true);
 
     setExams((prev) => {
       const exists = prev.some((e) => sanitizeDocId(e.id) === canonicalId);
@@ -607,22 +841,13 @@ export default function App() {
       try {
         localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(next));
       } catch {
-        // ignore storage quota errors
+        // ignore
       }
       return next;
     });
 
     setEditingExam(null);
-    setSyncFeedbackMessage(`✅ Đã lưu đề thi "${normalizedExam.title}" thành công!`);
-    window.setTimeout(() => {
-      setSyncFeedbackMessage((prev) => (prev ? null : null));
-    }, 4500);
-
-    void saveExamToCloud(normalizedExam).then((ok) => {
-      if (ok) {
-        setCloudSynced(true);
-      }
-    });
+    showFeedback(`✅ Đã lưu đề thi "${normalizedExam.title}" lên Cloud thành công!`, 4500);
 
     const base = getBasePathname();
     if (startImmediately) {
@@ -637,32 +862,39 @@ export default function App() {
       setActiveView('dashboard');
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    return { ok: true };
   };
 
-  const handleToggleFavorite = (examId: string) => {
-    setExams((prev) =>
-      prev.map((e) => {
-        if (e.id === examId) {
-          const updated = { ...e, isFavorite: !e.isFavorite };
-          if (isAdmin) {
-            void saveExamToCloud(updated);
-          }
-          return updated;
-        }
-        return e;
-      })
-    );
+  const handleToggleFavorite = async (examId: string) => {
+    const target = examsRef.current.find((e) => e.id === examId);
+    if (!target) return;
+    const updated: Exam = { ...target, isFavorite: !target.isFavorite };
+
+    setExams((prev) => prev.map((e) => (e.id === examId ? updated : e)));
+
+    if (isAdmin) {
+      const res = await saveExamToCloud(updated);
+      if (!res.ok) {
+        setExams((prev) => prev.map((e) => (e.id === examId ? target : e)));
+        showFeedback(
+          `❌ Không thể cập nhật trạng thái yêu thích lên Cloud: ${res.error || 'Lỗi mạng'}`
+        );
+      }
+    }
   };
 
-  const handleDeleteExam = (examId: string) => {
+  const handleDeleteExam = async (examId: string) => {
     if (!isAdmin) return;
     const safeTarget = sanitizeDocId(examId);
+    const previousExams = examsRef.current;
+
     deletedExamIdsRef.current.add(examId);
     deletedExamIdsRef.current.add(safeTarget);
     persistDeletedIds();
     pendingSaveExamIdsRef.current.delete(examId);
     pendingSaveExamIdsRef.current.delete(safeTarget);
     persistPendingSaveIds();
+
     if (
       lastSavedExamRef.current &&
       (lastSavedExamRef.current.id === examId ||
@@ -678,15 +910,28 @@ export default function App() {
       try {
         localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(remaining));
       } catch {
-        // ignore storage quota errors
+        // ignore
       }
       return remaining;
     });
 
-    void deleteExamFromCloud(examId).then(() => {
-      setSyncFeedbackMessage('🗑️ Đã xoá vĩnh viễn đề thi khỏi thư viện và Cloud!');
-      setTimeout(() => setSyncFeedbackMessage(''), 4000);
-    });
+    const res = await deleteExamFromCloud(examId);
+    if (res.ok) {
+      showFeedback('🗑️ Đã xoá vĩnh viễn đề thi khỏi thư viện và Cloud!', 4000);
+    } else {
+      deletedExamIdsRef.current.delete(examId);
+      deletedExamIdsRef.current.delete(safeTarget);
+      persistDeletedIds();
+      setExams(previousExams);
+      try {
+        localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(previousExams));
+      } catch {
+        // ignore
+      }
+      showFeedback(
+        `❌ Không xóa được đề trên Cloud: ${res.error || 'Vui lòng kiểm tra kết nối mạng.'}`
+      );
+    }
   };
 
   const handleExportExamsJson = () => {
@@ -706,35 +951,93 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleImportExamsJson = (
+  const handleImportExamsJson = async (
     importedExams: Exam[],
     importedBranding?: Partial<SiteBranding>
   ) => {
-    if (!isAdmin || !Array.isArray(importedExams)) return;
+    if (!isAdmin) {
+      showFeedback('❌ Bạn cần đăng nhập quyền Admin trước khi nhập dữ liệu từ file .json.');
+      return;
+    }
+    if (!Array.isArray(importedExams) || importedExams.length === 0) {
+      showFeedback('❌ File .json không hợp lệ hoặc không có đề thi nào để nhập.');
+      return;
+    }
+
+    const validImported = importedExams.filter(
+      (item) =>
+        item &&
+        typeof item.id === 'string' &&
+        typeof item.title === 'string' &&
+        Array.isArray(item.questions) &&
+        item.questions.length > 0
+    );
+
+    if (validImported.length === 0) {
+      showFeedback(
+        '❌ Không tìm thấy đề thi hợp lệ trong file .json (mỗi đề phải có id, title và danh sách câu hỏi).'
+      );
+      return;
+    }
+
     const nextBranding =
       importedBranding && typeof importedBranding === 'object'
-        ? { ...branding, ...importedBranding }
-        : branding;
+        ? { ...brandingRef.current, ...importedBranding }
+        : brandingRef.current;
+
     if (importedBranding && typeof importedBranding === 'object') {
-      handleUpdateBranding(importedBranding);
+      setBranding(nextBranding);
+      try {
+        localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(nextBranding));
+      } catch {
+        // ignore
+      }
     }
-    setExams((prev) => {
-      const map = new Map<string, Exam>();
-      for (const e of prev) {
-        if (e && e.id) map.set(sanitizeDocId(e.id), { ...e, id: sanitizeDocId(e.id) });
+
+    const map = new Map<string, Exam>();
+    for (const e of examsRef.current) {
+      if (e && e.id) {
+        map.set(sanitizeDocId(e.id), { ...e, id: sanitizeDocId(e.id) });
       }
-      for (const item of importedExams) {
-        if (item && typeof item.id === 'string' && Array.isArray(item.questions)) {
-          const cid = sanitizeDocId(item.id);
-          deletedExamIdsRef.current.delete(cid);
-          map.set(cid, { ...item, id: cid });
+    }
+    for (const item of validImported) {
+      const cid = sanitizeDocId(item.id);
+      deletedExamIdsRef.current.delete(cid);
+      map.set(cid, { ...item, id: cid });
+    }
+    persistDeletedIds();
+
+    const merged = Array.from(map.values());
+    setExams(merged);
+    try {
+      localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(merged));
+    } catch {
+      // ignore
+    }
+
+    setIsSyncingCloud(true);
+    try {
+      const res = await syncAllToCloud(merged, nextBranding);
+      if (res.success) {
+        setCloudSynced(true);
+        showFeedback(
+          `✅ Đã nhập và đồng bộ ${res.count} đề thi lên Cloud thành công!`,
+          5000
+        );
+      } else {
+        for (const f of res.failed) {
+          pendingSaveExamIdsRef.current.add(sanitizeDocId(f.id));
         }
+        persistPendingSaveIds();
+        showFeedback(
+          `⚠️ Nhập JSON: ${res.count} đề thành công, ${res.failed.length} đề lỗi${
+            res.failed[0] ? ` (${res.failed[0].title}: ${res.failed[0].error})` : ''
+          }`
+        );
       }
-      persistDeletedIds();
-      const merged = Array.from(map.values());
-      void syncAllToCloud(merged, nextBranding);
-      return merged;
-    });
+    } finally {
+      setIsSyncingCloud(false);
+    }
   };
 
   const currentExam =
@@ -750,93 +1053,110 @@ export default function App() {
       : undefined);
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#f8fafc] text-slate-900">
-      <div className="flex-1">
-        {activeView === 'forbidden' && (
-          <main className="max-w-xl mx-auto px-4 py-20 text-center">
-            <div className="bg-white rounded-3xl border border-slate-200/80 shadow-md shadow-slate-200/40 p-10 space-y-5">
-              <div className="w-16 h-16 rounded-full bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto">
-                <ShieldOff className="w-8 h-8" />
+    <ErrorBoundary
+      onResetToLibrary={() => {
+        setReviewingAttempt(null);
+        handleOpenLibrary();
+      }}
+    >
+      <div className="min-h-screen flex flex-col bg-[#f8fafc] text-slate-900">
+        <div className="flex-1">
+          {activeView === 'forbidden' && (
+            <main className="max-w-xl mx-auto px-4 py-20 text-center">
+              <div className="bg-white rounded-3xl border border-slate-200/80 shadow-md shadow-slate-200/40 p-10 space-y-5">
+                <div className="w-16 h-16 rounded-full bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto">
+                  <ShieldOff className="w-8 h-8" />
+                </div>
+
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+                  bạn không nên ở đây
+                </h1>
+
+                {forbiddenReason && (
+                  <p className="text-sm text-slate-500 max-w-md mx-auto">
+                    {forbiddenReason}
+                  </p>
+                )}
+
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={handleCloseLibrary}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                    <span>Quay về trang chính</span>
+                  </button>
+                </div>
               </div>
+            </main>
+          )}
 
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-                bạn không nên ở đây
-              </h1>
+          {(activeView === 'dashboard' || (activeView === 'take-exam' && !currentExam)) && (
+            <DashboardView
+              exams={exams}
+              attempts={attempts}
+              isAdmin={isAdmin}
+              branding={branding}
+              onUpdateBranding={(b) => void handleUpdateBranding(b)}
+              isLibraryOpen={activeView === 'take-exam' ? true : isLibraryOpen}
+              onOpenLibrary={handleOpenLibrary}
+              onCloseLibrary={handleCloseLibrary}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              onClearFilters={() => setSearchQuery('')}
+              onStartExam={handleStartExam}
+              onReviewAttempt={handleReviewAttempt}
+              onEditExam={handleEditExam}
+              onCreateNewExam={handleCreateNewExam}
+              onToggleFavorite={(id) => void handleToggleFavorite(id)}
+              onDeleteExam={(id) => void handleDeleteExam(id)}
+              onExportExamsJson={handleExportExamsJson}
+              onImportExamsJson={(list, b) => void handleImportExamsJson(list, b)}
+              onSyncCloud={handleSyncCloud}
+              isSyncingCloud={isSyncingCloud}
+              cloudSynced={cloudSynced}
+              syncFeedbackMessage={syncFeedbackMessage}
+              onDismissSyncFeedback={() => showFeedback(null)}
+              unsyncedExamIds={unsyncedExamIds}
+              onRetrySyncExam={handleRetrySyncExam}
+            />
+          )}
 
-              {forbiddenReason && (
-                <p className="text-sm text-slate-500 max-w-md mx-auto">
-                  {forbiddenReason}
-                </p>
-              )}
+          {activeView === 'take-exam' && currentExam && (
+            <ExamTakeView
+              exam={currentExam}
+              initialAttempt={reviewingAttempt}
+              previewMode={previewMode}
+              onCompleteAttempt={handleCompleteAttempt}
+              onBackToDashboard={() => {
+                setReviewingAttempt(null);
+                handleOpenLibrary();
+              }}
+            />
+          )}
 
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={handleCloseLibrary}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  <span>Quay về trang chính</span>
-                </button>
-              </div>
-            </div>
-          </main>
-        )}
-
-        {(activeView === 'dashboard' || (activeView === 'take-exam' && !currentExam)) && (
-          <DashboardView
-            exams={exams}
-            attempts={attempts}
-            isAdmin={isAdmin}
-            branding={branding}
-            onUpdateBranding={handleUpdateBranding}
-            isLibraryOpen={activeView === 'take-exam' ? true : isLibraryOpen}
-            onOpenLibrary={handleOpenLibrary}
-            onCloseLibrary={handleCloseLibrary}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            onClearFilters={() => setSearchQuery('')}
-            onStartExam={handleStartExam}
-            onReviewAttempt={handleReviewAttempt}
-            onEditExam={handleEditExam}
-            onCreateNewExam={handleCreateNewExam}
-            onToggleFavorite={handleToggleFavorite}
-            onDeleteExam={handleDeleteExam}
-            onExportExamsJson={handleExportExamsJson}
-            onImportExamsJson={handleImportExamsJson}
-            onSyncCloud={handleSyncCloud}
-            isSyncingCloud={isSyncingCloud}
-            cloudSynced={cloudSynced}
-            syncFeedbackMessage={syncFeedbackMessage}
-          />
-        )}
-
-        {activeView === 'take-exam' && currentExam && (
-          <ExamTakeView
-            exam={currentExam}
-            initialAttempt={reviewingAttempt}
-            previewMode={previewMode}
-            onCompleteAttempt={handleCompleteAttempt}
-            onBackToDashboard={() => {
-              setReviewingAttempt(null);
-              handleOpenLibrary();
-            }}
-          />
-        )}
-
-        {activeView === 'create-exam' && isAdmin && (
-          <CreateExamView
-            branding={branding}
-            editingExam={editingExam}
-            onSaveExam={handleSaveExam}
-            onCancel={() => {
-              setEditingExam(null);
-              handleCloseLibrary();
-            }}
-          />
-        )}
+          {activeView === 'create-exam' && isAdmin && (
+            <Suspense
+              fallback={
+                <div className="min-h-screen flex items-center justify-center bg-[#f8fafc] text-xs font-bold text-slate-600">
+                  Đang tải công cụ tạo đề...
+                </div>
+              }
+            >
+              <CreateExamView
+                branding={branding}
+                editingExam={editingExam}
+                onSaveExam={handleSaveExam}
+                onCancel={() => {
+                  setEditingExam(null);
+                  handleCloseLibrary();
+                }}
+              />
+            </Suspense>
+          )}
+        </div>
       </div>
-    </div>
+    </ErrorBoundary>
   );
 }
-

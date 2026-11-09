@@ -35,6 +35,8 @@ import {
   SiteBranding,
   DEFAULT_SITE_BRANDING,
 } from '../types/exam';
+import { compressImageDataUriIfNeeded } from '../utils/docxHelper';
+import { MAX_LOGO_CHARS, sanitizeDocId } from '../firebase';
 
 interface DashboardViewProps {
   exams: Exam[];
@@ -60,6 +62,9 @@ interface DashboardViewProps {
   isSyncingCloud?: boolean;
   cloudSynced?: boolean;
   syncFeedbackMessage?: string | null;
+  onDismissSyncFeedback?: () => void;
+  unsyncedExamIds?: string[];
+  onRetrySyncExam?: (exam: Exam) => Promise<void>;
 }
 
 type SortField = 'id' | 'category' | 'title' | 'date';
@@ -105,6 +110,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   isSyncingCloud = false,
   cloudSynced = false,
   syncFeedbackMessage,
+  onDismissSyncFeedback,
+  unsyncedExamIds = [],
+  onRetrySyncExam,
 }) => {
   const [filterNotDone, setFilterNotDone] = useState<boolean>(true);
   const [filterDone, setFilterDone] = useState<boolean>(true);
@@ -152,18 +160,48 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [editSubtitle, setEditSubtitle] = useState<string>(branding.subtitle);
   const [editVersion, setEditVersion] = useState<string>(branding.version);
   const [editLogoUrl, setEditLogoUrl] = useState<string>(branding.logoUrl || '');
+  const [brandingLogoError, setBrandingLogoError] = useState<string>('');
+  const [retryingExamId, setRetryingExamId] = useState<string | null>(null);
   const brandingLogoInputRef = useRef<HTMLInputElement | null>(null);
+
+  const unsyncedSet = useMemo(() => {
+    const s = new Set<string>();
+    unsyncedExamIds.forEach((id) => {
+      s.add(id);
+      s.add(sanitizeDocId(id));
+    });
+    return s;
+  }, [unsyncedExamIds]);
 
   useEffect(() => {
     setEditTitle(branding.title);
     setEditSubtitle(branding.subtitle);
     setEditVersion(branding.version);
     setEditLogoUrl(branding.logoUrl || '');
+    setBrandingLogoError('');
   }, [branding]);
+
+  useEffect(() => {
+    if (!isEditingBranding && !examPendingDelete) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (examPendingDelete) setExamPendingDelete(null);
+        else if (isEditingBranding) setIsEditingBranding(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isEditingBranding, examPendingDelete]);
 
   const handleSaveBranding = (e: React.FormEvent) => {
     e.preventDefault();
     if (!onUpdateBranding) return;
+    if (editLogoUrl.trim().length > MAX_LOGO_CHARS) {
+      setBrandingLogoError(
+        `Ảnh logo quá lớn (${Math.ceil(editLogoUrl.length / 1024)} KB). Hãy chọn ảnh nhỏ hơn.`
+      );
+      return;
+    }
     onUpdateBranding({
       title: editTitle.trim() || DEFAULT_SITE_BRANDING.title,
       subtitle: editSubtitle.trim() || DEFAULT_SITE_BRANDING.subtitle,
@@ -180,14 +218,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setEditSubtitle(DEFAULT_SITE_BRANDING.subtitle);
     setEditVersion(DEFAULT_SITE_BRANDING.version);
     setEditLogoUrl('');
+    setBrandingLogoError('');
     setIsEditingBranding(false);
   };
 
   const handleLogoUpload = (file: File) => {
+    setBrandingLogoError('');
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       if (typeof reader.result === 'string') {
-        setEditLogoUrl(reader.result);
+        const compressed = await compressImageDataUriIfNeeded(reader.result, 350_000);
+        if (compressed.length > MAX_LOGO_CHARS) {
+          setBrandingLogoError(
+            `Ảnh logo quá lớn (${Math.ceil(compressed.length / 1024)} KB) sau khi nén. Hãy chọn ảnh PNG/JPG/WebP nhẹ hơn.`
+          );
+          return;
+        }
+        setEditLogoUrl(compressed);
       }
     };
     reader.readAsDataURL(file);
@@ -445,6 +492,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <img
                       src={branding.logoUrl}
                       alt="Logo đề thi"
+                      loading="lazy"
+                      decoding="async"
                       className="w-full h-full object-contain rounded-xl"
                     />
                   ) : (
@@ -561,9 +610,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               )}
 
-              {isAdmin && syncFeedbackMessage && (
-                <div className="mt-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-900 text-white shadow-lg animate-fade-in flex items-center justify-between gap-2">
-                  <span>{syncFeedbackMessage}</span>
+              {syncFeedbackMessage && (
+                <div className="mt-2.5 w-full px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-900 text-white shadow-lg animate-fade-in flex items-center justify-between gap-2">
+                  <span className="text-left leading-relaxed">{syncFeedbackMessage}</span>
+                  {onDismissSyncFeedback && (
+                    <button
+                      type="button"
+                      onClick={onDismissSyncFeedback}
+                      aria-label="Đóng thông báo"
+                      className="p-1 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white cursor-pointer shrink-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -637,6 +696,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <img
                           src={editLogoUrl}
                           alt="Logo xem trước"
+                          loading="lazy"
+                          decoding="async"
                           className="w-full h-full object-contain rounded-lg"
                         />
                       ) : (
@@ -674,7 +735,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         {editLogoUrl && (
                           <button
                             type="button"
-                            onClick={() => setEditLogoUrl('')}
+                            onClick={() => {
+                              setEditLogoUrl('');
+                              setBrandingLogoError('');
+                            }}
                             className="px-2.5 py-1.5 rounded-xl border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-semibold cursor-pointer transition-colors"
                           >
                             Dùng logo mặc định
@@ -684,6 +748,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <p className="text-[11px] text-slate-400">
                         Hỗ trợ PNG, JPG, SVG hoặc WebP vuông tỉ lệ 1:1
                       </p>
+                      {brandingLogoError && (
+                        <p className="text-xs font-semibold text-rose-600">
+                          {brandingLogoError}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -918,6 +987,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             )}
           </button>
         </div>
+        {/* Sync Feedback Banner in Library View */}
+        {syncFeedbackMessage && (
+          <div className="mt-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-900 text-white shadow-md flex items-center justify-between gap-2">
+            <span>{syncFeedbackMessage}</span>
+            {onDismissSyncFeedback && (
+              <button
+                type="button"
+                onClick={onDismissSyncFeedback}
+                aria-label="Đóng thông báo"
+                className="p-1 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
       </header>
 
       {/* Main 2-Column Content */}
@@ -1089,6 +1174,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 const latestAttempt = latestAttemptByExamId[exam.id];
                 const isManuallyDone = Boolean(manualDoneMap[exam.id]);
                 const isCompleted = Boolean(latestAttempt) || isManuallyDone;
+                const isUnsynced =
+                  unsyncedSet.has(exam.id) || unsyncedSet.has(sanitizeDocId(exam.id));
 
                 return (
                   <div
@@ -1096,16 +1183,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs space-y-3"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 min-w-0">
                         <span className="px-2.5 py-1 rounded-md bg-[#f1f5f9] border border-slate-200/70 text-slate-700 text-xs font-bold whitespace-nowrap">
                           {subj}
                         </span>
                         <span className="text-xs font-semibold text-slate-400 tabular-nums">
                           #{displayCode}
                         </span>
+                        {isUnsynced && (
+                          <span className="px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-bold">
+                            Chưa đồng bộ
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2 shrink-0">
+                        {isUnsynced && isAdmin && onRetrySyncExam && (
+                          <button
+                            type="button"
+                            disabled={retryingExamId === exam.id}
+                            onClick={async () => {
+                              setRetryingExamId(exam.id);
+                              try {
+                                await onRetrySyncExam(exam);
+                              } finally {
+                                setRetryingExamId(null);
+                              }
+                            }}
+                            className="px-2.5 py-1 rounded-md bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold cursor-pointer"
+                          >
+                            {retryingExamId === exam.id ? 'Đang gửi...' : 'Đồng bộ lại'}
+                          </button>
+                        )}
                         {latestAttempt ? (
                           <button
                             type="button"
@@ -1279,6 +1388,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       const latestAttempt = latestAttemptByExamId[exam.id];
                       const isManuallyDone = Boolean(manualDoneMap[exam.id]);
                       const isCompleted = Boolean(latestAttempt) || isManuallyDone;
+                      const isUnsynced =
+                        unsyncedSet.has(exam.id) || unsyncedSet.has(sanitizeDocId(exam.id));
 
                       return (
                         <tr
@@ -1299,13 +1410,44 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                           {/* Tên Đề Thi */}
                           <td className="py-3.5 px-4">
-                            <button
-                              type="button"
-                              onClick={() => onStartExam(exam.id, false)}
-                              className="text-left font-bold text-slate-800 hover:text-[#2563eb] transition-colors cursor-pointer"
-                            >
-                              {exam.title}
-                            </button>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => onStartExam(exam.id, false)}
+                                className="text-left font-bold text-slate-800 hover:text-[#2563eb] transition-colors cursor-pointer"
+                              >
+                                {exam.title}
+                              </button>
+                              {isUnsynced && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-bold">
+                                  Chưa đồng bộ
+                                </span>
+                              )}
+                              {isUnsynced && isAdmin && onRetrySyncExam && (
+                                <button
+                                  type="button"
+                                  disabled={retryingExamId === exam.id}
+                                  onClick={async () => {
+                                    setRetryingExamId(exam.id);
+                                    try {
+                                      await onRetrySyncExam(exam);
+                                    } finally {
+                                      setRetryingExamId(null);
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  <RefreshCw
+                                    className={`w-3 h-3 ${
+                                      retryingExamId === exam.id ? 'animate-spin' : ''
+                                    }`}
+                                  />
+                                  <span>
+                                    {retryingExamId === exam.id ? 'Đang gửi...' : 'Đồng bộ lại'}
+                                  </span>
+                                </button>
+                              )}
+                            </div>
                           </td>
 
                           {/* Ngày Upload */}
@@ -1465,6 +1607,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <img
                         src={editLogoUrl}
                         alt="Logo xem trước"
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-contain rounded-lg"
                       />
                     ) : (
@@ -1502,7 +1646,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       {editLogoUrl && (
                         <button
                           type="button"
-                          onClick={() => setEditLogoUrl('')}
+                          onClick={() => {
+                            setEditLogoUrl('');
+                            setBrandingLogoError('');
+                          }}
                           className="px-2.5 py-1.5 rounded-xl border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-semibold cursor-pointer transition-colors"
                         >
                           Dùng logo mặc định
@@ -1512,6 +1659,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <p className="text-[11px] text-slate-400">
                       Hỗ trợ PNG, JPG, SVG hoặc WebP vuông tỉ lệ 1:1
                     </p>
+                    {brandingLogoError && (
+                      <p className="text-xs font-semibold text-rose-600">
+                        {brandingLogoError}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>

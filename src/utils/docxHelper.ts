@@ -1,6 +1,22 @@
 import JSZip from 'jszip';
 import mammoth from 'mammoth';
 
+export const MAX_IMAGE_SIDE = 1280;
+export const MAX_SINGLE_IMAGE_BYTES = 180_000;
+export const MAX_TOTAL_IMAGE_BYTES = 650_000;
+const MIN_IMAGE_BUDGET_BYTES = 30_000;
+
+export const COMPRESS_STEPS = [
+  { side: 1280, quality: 0.72 },
+  { side: 1024, quality: 0.6 },
+  { side: 800, quality: 0.5 },
+  { side: 600, quality: 0.45 },
+  { side: 480, quality: 0.4 },
+];
+
+const SUPPORTED_RASTER_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
+const SUPPORTED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
+
 // A clean, lightweight SVG historical timeline diagram encoded as a data URI for sample questions
 export const SAMPLE_QUESTION_DIAGRAM_DATA_URI =
   'data:image/svg+xml;utf8,' +
@@ -24,123 +40,412 @@ export const SAMPLE_QUESTION_DIAGRAM_DATA_URI =
     </svg>`
   );
 
+export interface DocxExtractResult {
+  text: string;
+  imageCount: number;
+  skippedImages: number;
+  warnings: string[];
+}
+
+export interface ParsedRelationship {
+  id: string;
+  type: string;
+  target: string;
+  targetMode?: string;
+}
+
 /**
- * Compresses a large base64 image data URI in the browser using an offscreen canvas
- * so exam documents stay well within Firestore's 1 MiB document size limit.
+ * Strips <mc:Fallback>...</mc:Fallback> blocks so images inside <mc:AlternateContent>
+ * are not extracted twice (once from mc:Choice and once from mc:Fallback).
  */
-export async function compressImageDataUriIfNeeded(
-  dataUri: string,
-  maxWidth = 840,
-  quality = 0.78
-): Promise<string> {
-  if (
-    typeof window === 'undefined' ||
-    typeof document === 'undefined' ||
-    !dataUri.startsWith('data:image/') ||
-    dataUri.startsWith('data:image/svg') ||
-    dataUri.length < 45000
-  ) {
-    return dataUri;
+export function stripMcFallbackBlocks(xml: string): string {
+  return xml.replace(/<mc:Fallback\b[\s\S]*?<\/mc:Fallback>/gi, '');
+}
+
+/**
+ * Extracts image relationship IDs (rId) referenced by <a:blip> or <v:imagedata> in order of appearance.
+ * Ignores <w:hyperlink r:id="..."> and other non-image relationships.
+ */
+export function extractImageRIdsFromXmlFragment(xmlFragment: string): string[] {
+  const cleaned = stripMcFallbackBlocks(xmlFragment);
+  const regex = new RegExp(
+    '<(?:a:blip|v:imagedata)\\b[^>]*?\\br:(?:embed|id)\\s*=\\s*(["\'])([^"\']+)\\1',
+    'gi'
+  );
+  const result: string[] = [];
+  const seen = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(cleaned)) !== null) {
+    const rId = match[2]?.trim();
+    if (rId && !seen.has(rId)) {
+      seen.add(rId);
+      result.push(rId);
+    }
+  }
+  return result;
+}
+
+/**
+ * Normalizes a relationship Target path inside a .docx archive to a clean zip-relative path (e.g. `word/media/image1.png`).
+ */
+export function normalizeDocxTargetPath(rawTarget: string): string {
+  const cleaned = rawTarget
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^(?:\.\.?\/)+/, '');
+  if (!cleaned) return '';
+  return cleaned.startsWith('word/') ? cleaned : `word/${cleaned}`;
+}
+
+/**
+ * Parses word/_rels/document.xml.rels regardless of attribute ordering,
+ * returning only internal image relationships.
+ */
+export function parseImageRelationshipsXml(relsXml: string): Map<string, ParsedRelationship> {
+  const map = new Map<string, ParsedRelationship>();
+  const tagRegex = /<Relationship\b[^>]*\/?>/gi;
+  let tagMatch: RegExpExecArray | null;
+
+  while ((tagMatch = tagRegex.exec(relsXml)) !== null) {
+    const tag = tagMatch[0];
+    const idMatch = tag.match(/\bId\s*=\s*(["'])(.*?)\1/i);
+    const typeMatch = tag.match(/\bType\s*=\s*(["'])(.*?)\1/i);
+    const targetMatch = tag.match(/\bTarget\s*=\s*(["'])(.*?)\1/i);
+    const modeMatch = tag.match(/\bTargetMode\s*=\s*(["'])(.*?)\1/i);
+
+    if (!idMatch || !targetMatch) continue;
+    const id = idMatch[2].trim();
+    const type = typeMatch ? typeMatch[2].trim() : '';
+    const target = targetMatch[2].trim();
+    const targetMode = modeMatch ? modeMatch[2].trim() : undefined;
+
+    if (!id || !target) continue;
+    if (targetMode && targetMode.toLowerCase() === 'external') continue;
+    // If Type attribute is present, only accept relationships ending with /image
+    if (type && !/\/image$/i.test(type)) continue;
+
+    map.set(id, { id, type, target, targetMode });
   }
 
-  return new Promise<string>((resolve) => {
+  return map;
+}
+
+function getMimeFromExt(ext: string): string {
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'bmp':
+      return 'image/bmp';
+    default:
+      return 'image/png';
+  }
+}
+
+async function renderDataUriAtStep(
+  dataUri: string,
+  maxSide: number,
+  quality: number
+): Promise<string | null> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return null;
+  }
+
+  // Try createImageBitmap first for lower memory overhead
+  if (typeof createImageBitmap === 'function' && typeof fetch === 'function') {
+    try {
+      const res = await fetch(dataUri);
+      const blob = await res.blob();
+      const bitmap = await createImageBitmap(blob);
+      try {
+        let w = bitmap.width || 600;
+        let h = bitmap.height || 400;
+        if (w > maxSide || h > maxSide) {
+          if (w >= h) {
+            h = Math.max(1, Math.round((h * maxSide) / w));
+            w = maxSide;
+          } else {
+            w = Math.max(1, Math.round((w * maxSide) / h));
+            h = maxSide;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        return canvas.toDataURL('image/jpeg', quality);
+      } finally {
+        bitmap.close();
+      }
+    } catch {
+      // Fallback to HTMLImageElement below
+    }
+  }
+
+  return new Promise<string | null>((resolve) => {
     const img = new Image();
     img.onload = () => {
       try {
         let w = img.naturalWidth || img.width || 600;
         let h = img.naturalHeight || img.height || 400;
-        if (w > maxWidth) {
-          h = Math.round((h * maxWidth) / w);
-          w = maxWidth;
+        if (w > maxSide || h > maxSide) {
+          if (w >= h) {
+            h = Math.max(1, Math.round((h * maxSide) / w));
+            w = maxSide;
+          } else {
+            w = Math.max(1, Math.round((w * maxSide) / h));
+            h = maxSide;
+          }
         }
         const canvas = document.createElement('canvas');
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
-          resolve(dataUri);
+          resolve(null);
           return;
         }
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
-        const compressed = canvas.toDataURL('image/jpeg', quality);
-        resolve(compressed.length < dataUri.length ? compressed : dataUri);
+        resolve(canvas.toDataURL('image/jpeg', quality));
       } catch {
-        resolve(dataUri);
+        resolve(null);
       }
     };
-    img.onerror = () => resolve(dataUri);
+    img.onerror = () => resolve(null);
     img.src = dataUri;
   });
 }
 
 /**
- * Extracts text, data tables (<w:tbl>), and embedded images from a .docx ArrayBuffer,
- * preserving underlined/bold/highlighted/red option markers by prefixing them with '*'
- * so the exam parser detects single and multiple correct answers automatically.
+ * Compresses a base64 image data URI in the browser using progressive COMPRESS_STEPS
+ * until its length is <= maxBytes (default MAX_SINGLE_IMAGE_BYTES = 180_000).
+ * Notice: if the caller passes a small number like 840 (legacy maxWidth), we treat values <= 4096 as maxSide
+ * and values > 4096 as maxBytes cap!
  */
-export async function extractTextFromDocxBuffer(arrayBuffer: ArrayBuffer): Promise<string> {
+export async function compressImageDataUriIfNeeded(
+  dataUri: string,
+  maxBytesOrWidth = MAX_SINGLE_IMAGE_BYTES,
+  initialQuality = 0.72
+): Promise<string> {
+  if (
+    !dataUri ||
+    !dataUri.startsWith('data:image/') ||
+    dataUri.startsWith('data:image/svg')
+  ) {
+    return dataUri;
+  }
+
+  const maxBytes = maxBytesOrWidth > 4096 ? maxBytesOrWidth : MAX_SINGLE_IMAGE_BYTES;
+  const customMaxSide = maxBytesOrWidth <= 4096 ? maxBytesOrWidth : undefined;
+
+  if (dataUri.length <= maxBytes && (!customMaxSide || dataUri.length < 45_000)) {
+    return dataUri;
+  }
+
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return dataUri;
+  }
+
+  let bestCandidate = dataUri;
+  const steps = customMaxSide
+    ? [{ side: customMaxSide, quality: initialQuality }, ...COMPRESS_STEPS]
+    : COMPRESS_STEPS;
+
+  for (const step of steps) {
+    const candidate = await renderDataUriAtStep(dataUri, step.side, step.quality);
+    if (candidate) {
+      if (candidate.length < bestCandidate.length) {
+        bestCandidate = candidate;
+      }
+      if (candidate.length <= maxBytes) {
+        return candidate;
+      }
+    }
+  }
+
+  return bestCandidate;
+}
+
+/**
+ * Extracts text, data tables (<w:tbl>), and embedded images from a .docx ArrayBuffer with a detailed report,
+ * enforcing per-image and total-exam image byte budgets.
+ */
+export async function extractDocxWithReport(
+  arrayBuffer: ArrayBuffer,
+  options?: {
+    maxTotalImageBytes?: number;
+    maxSingleImageBytes?: number;
+    onProgress?: (current: number, total: number) => void;
+  }
+): Promise<DocxExtractResult> {
+  const warnings: string[] = [];
+  let imageCount = 0;
+  let skippedImages = 0;
+  const maxTotalBytes = options?.maxTotalImageBytes ?? MAX_TOTAL_IMAGE_BYTES;
+  const maxSingleBytes = options?.maxSingleImageBytes ?? MAX_SINGLE_IMAGE_BYTES;
+
   try {
     const zip = await JSZip.loadAsync(arrayBuffer);
     const docXmlFile = zip.file('word/document.xml');
     if (docXmlFile) {
       const xmlText = await docXmlFile.async('string');
+      const cleanedXml = stripMcFallbackBlocks(xmlText);
+      const referencedRIds = extractImageRIdsFromXmlFragment(cleanedXml);
 
-      // Build relationship map rId -> base64 data URI for any embedded images in word/media/*
       const relIdToDataUri: Record<string, string> = {};
       const relsFile = zip.file('word/_rels/document.xml.rels');
-      if (relsFile) {
+
+      if (relsFile && referencedRIds.length > 0) {
         const relsXml = await relsFile.async('string');
-        const relRegex = /<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"[^>]*\/?>/gi;
-        let relMatch: RegExpExecArray | null;
-        while ((relMatch = relRegex.exec(relsXml)) !== null) {
-          const rId = relMatch[1];
-          const target = relMatch[2].replace(/^\/+/, '');
-          const mediaPath = target.startsWith('word/') ? target : `word/${target}`;
-          const mediaFile = zip.file(mediaPath);
-          if (mediaFile) {
-            const base64 = await mediaFile.async('base64');
-            const ext = mediaPath.split('.').pop()?.toLowerCase() || 'png';
-            const mime =
-              ext === 'jpg' || ext === 'jpeg'
-                ? 'image/jpeg'
-                : ext === 'svg'
-                ? 'image/svg+xml'
-                : ext === 'gif'
-                ? 'image/gif'
-                : ext === 'webp'
-                ? 'image/webp'
-                : 'image/png';
-            const rawUri = `data:${mime};base64,${base64}`;
-            relIdToDataUri[rId] = await compressImageDataUriIfNeeded(rawUri);
+        const relMap = parseImageRelationshipsXml(relsXml);
+
+        // Identify unique valid image targets actually referenced in document.xml
+        interface PendingImageTask {
+          mediaPath: string;
+          ext: string;
+          rIds: string[];
+        }
+        const pathToTask = new Map<string, PendingImageTask>();
+
+        for (const rId of referencedRIds) {
+          const rel = relMap.get(rId);
+          if (!rel) continue;
+          const mediaPath = normalizeDocxTargetPath(rel.target);
+          const ext = (mediaPath.split('.').pop() || '').toLowerCase();
+
+          if (!SUPPORTED_IMAGE_EXTS.has(ext)) {
+            skippedImages++;
+            warnings.push(
+              `Ảnh "${mediaPath.split('/').pop() || mediaPath}" có định dạng .${ext || 'lạ'} không được hỗ trợ. Hãy mở Word và chèn lại ảnh dạng PNG hoặc JPG.`
+            );
+            continue;
           }
+
+          const existing = pathToTask.get(mediaPath);
+          if (existing) {
+            existing.rIds.push(rId);
+          } else {
+            pathToTask.set(mediaPath, { mediaPath, ext, rIds: [rId] });
+          }
+        }
+
+        const tasks = Array.from(pathToTask.values());
+        let remainingBudget = maxTotalBytes;
+
+        for (let i = 0; i < tasks.length; i++) {
+          const task = tasks[i];
+          const remainingImages = tasks.length - i;
+          options?.onProgress?.(i + 1, tasks.length);
+
+          const mediaFile = zip.file(task.mediaPath);
+          if (!mediaFile) {
+            skippedImages++;
+            warnings.push(
+              `Không tìm thấy dữ liệu ảnh "${task.mediaPath}" bên trong file Word.`
+            );
+            continue;
+          }
+
+          if (remainingBudget < MIN_IMAGE_BUDGET_BYTES) {
+            skippedImages++;
+            warnings.push(
+              `Ảnh ${i + 1} (${task.mediaPath.split('/').pop()}) bị bỏ qua vì tổng dung lượng ảnh của đề đã đạt trần cho phép (${Math.round(maxTotalBytes / 1024)} KB).`
+            );
+            continue;
+          }
+
+          const base64 = await mediaFile.async('base64');
+          const mime = getMimeFromExt(task.ext);
+          const rawUri = `data:${mime};base64,${base64}`;
+
+          const cap = Math.min(
+            maxSingleBytes,
+            Math.max(
+              MIN_IMAGE_BUDGET_BYTES,
+              Math.floor(remainingBudget / Math.max(1, remainingImages))
+            )
+          );
+
+          let finalUri = rawUri;
+          if (rawUri.length > cap && SUPPORTED_RASTER_EXTS.has(task.ext)) {
+            finalUri = await compressImageDataUriIfNeeded(rawUri, cap);
+          }
+
+          if (finalUri.length > remainingBudget || finalUri.length > maxSingleBytes) {
+            skippedImages++;
+            warnings.push(
+              `Ảnh ${i + 1} (${task.mediaPath.split('/').pop()}, ~${Math.round(finalUri.length / 1024)} KB) vượt ngân sách dung lượng ảnh còn lại (${Math.round(Math.min(remainingBudget, maxSingleBytes) / 1024)} KB) nên đã được bỏ qua.`
+            );
+            continue;
+          }
+
+          for (const id of task.rIds) {
+            relIdToDataUri[id] = finalUri;
+          }
+          remainingBudget -= finalUri.length;
+          imageCount++;
         }
       }
 
-      const parsedFromXml = parseWordDocumentXmlWithAnswerHighlights(xmlText, relIdToDataUri);
+      const parsedFromXml = parseWordDocumentXmlWithAnswerHighlights(cleanedXml, relIdToDataUri);
       if (parsedFromXml.trim().length > 0) {
-        return parsedFromXml;
+        return {
+          text: parsedFromXml,
+          imageCount,
+          skippedImages,
+          warnings,
+        };
       }
     }
   } catch {
     // Fallback to mammoth below
   }
 
+  warnings.push(
+    'File Word được đọc ở chế độ văn bản thuần (mammoth): không có ảnh và không tự nhận diện đáp án gạch chân/tô màu.'
+  );
   const rawResult = await mammoth.extractRawText({ arrayBuffer });
-  return rawResult.value || '';
+  return {
+    text: rawResult.value || '',
+    imageCount: 0,
+    skippedImages,
+    warnings,
+  };
+}
+
+/**
+ * Backwards-compatible wrapper that returns the extracted text string.
+ */
+export async function extractTextFromDocxBuffer(arrayBuffer: ArrayBuffer): Promise<string> {
+  const report = await extractDocxWithReport(arrayBuffer);
+  return report.text;
 }
 
 function extractParagraphContent(
   pContent: string,
   relIdToDataUri: Record<string, string>
-): { text: string; embeddedImageUri?: string } {
-  const blipMatch =
-    pContent.match(/r:embed="([^"]+)"/) || pContent.match(/r:id="([^"]+)"/);
-  const embeddedImageUri =
-    blipMatch && relIdToDataUri[blipMatch[1]] ? relIdToDataUri[blipMatch[1]] : undefined;
+): { text: string; embeddedImageUris: string[] } {
+  const cleanedP = stripMcFallbackBlocks(pContent);
+  const rIds = extractImageRIdsFromXmlFragment(cleanedP);
+  const embeddedImageUris = rIds
+    .map((id) => relIdToDataUri[id])
+    .filter((uri): uri is string => Boolean(uri));
 
-  const rRegex = /<w:r(?:\s[^>]*)?>([\s\S]*?)<\/w:r>/g;
+  // Match non-self-closing <w:r>...</w:r> elements
+  const rRegex = /<w:r(?:\s(?:[^>]*[^/>])?)?>([\s\S]*?)<\/w:r>/g;
   let rMatch: RegExpExecArray | null;
 
   interface RunSegment {
@@ -150,9 +455,9 @@ function extractParagraphContent(
 
   const runs: RunSegment[] = [];
 
-  while ((rMatch = rRegex.exec(pContent)) !== null) {
+  while ((rMatch = rRegex.exec(cleanedP)) !== null) {
     const rInner = rMatch[1];
-    const tRegex = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+    const tRegex = /<w:t(?:\s(?:[^>]*[^/>])?)?>([\s\S]*?)<\/w:t>/g;
     let tMatch: RegExpExecArray | null;
     let runText = '';
     while ((tMatch = tRegex.exec(rInner)) !== null) {
@@ -164,7 +469,7 @@ function extractParagraphContent(
 
     if (!runText) continue;
 
-    const rPrMatch = rInner.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/);
+    const rPrMatch = rInner.match(/<w:rPr(?:\s(?:[^>]*[^/>])?)?>([\s\S]*?)<\/w:rPr>/);
     let isEmphasized = false;
     if (rPrMatch) {
       const rPr = rPrMatch[1];
@@ -205,8 +510,61 @@ function extractParagraphContent(
 
   return {
     text: lineText.trim(),
-    embeddedImageUri,
+    embeddedImageUris,
   };
+}
+
+/**
+ * Scans XML in document order and yields top-level `<w:tbl>...</w:tbl>` (handling nested tables by depth)
+ * and top-level non-self-closing `<w:p>...</w:p>` blocks (ignoring self-closing `<w:p .../>`).
+ */
+function extractTopLevelBlocks(xmlString: string): Array<{ type: 'tbl' | 'p'; content: string }> {
+  const blocks: Array<{ type: 'tbl' | 'p'; content: string }> = [];
+  const tokenRegex = /<(\/?)w:(tbl|p)(?:\s[^>]*|\s*)?>/g;
+  let tblDepth = 0;
+  let tblStartIdx = -1;
+  let pStartInnerIdx = -1;
+
+  let match: RegExpExecArray | null;
+  while ((match = tokenRegex.exec(xmlString)) !== null) {
+    const fullTag = match[0];
+    const isClosing = match[1] === '/';
+    const tagName = match[2]; // 'tbl' | 'p'
+    const isSelfClosing = !isClosing && fullTag.endsWith('/>');
+
+    if (tagName === 'tbl') {
+      if (isSelfClosing) continue;
+      if (!isClosing) {
+        if (tblDepth === 0) {
+          tblStartIdx = match.index;
+          pStartInnerIdx = -1;
+        }
+        tblDepth++;
+      } else if (tblDepth > 0) {
+        tblDepth--;
+        if (tblDepth === 0 && tblStartIdx >= 0) {
+          blocks.push({
+            type: 'tbl',
+            content: xmlString.slice(tblStartIdx, match.index + fullTag.length),
+          });
+          tblStartIdx = -1;
+        }
+      }
+    } else if (tagName === 'p' && tblDepth === 0) {
+      if (isSelfClosing) continue;
+      if (!isClosing) {
+        pStartInnerIdx = match.index + fullTag.length;
+      } else if (pStartInnerIdx >= 0) {
+        blocks.push({
+          type: 'p',
+          content: xmlString.slice(pStartInnerIdx, match.index),
+        });
+        pStartInnerIdx = -1;
+      }
+    }
+  }
+
+  return blocks;
 }
 
 /**
@@ -216,40 +574,43 @@ export function parseWordDocumentXmlWithAnswerHighlights(
   xmlString: string,
   relIdToDataUri: Record<string, string> = {}
 ): string {
+  const cleanedXml = stripMcFallbackBlocks(xmlString);
   const paragraphLines: string[] = [];
+  const blocks = extractTopLevelBlocks(cleanedXml);
 
-  // Match either a full <w:tbl>...</w:tbl> block or a top-level <w:p>...</w:p> block in document order
-  const blockRegex = /<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>|<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g;
-  let blockMatch: RegExpExecArray | null;
-
-  while ((blockMatch = blockRegex.exec(xmlString)) !== null) {
-    const fullBlock = blockMatch[0];
-
-    if (fullBlock.startsWith('<w:tbl')) {
-      const trRegex = /<w:tr(?:\s[^>]*)?>([\s\S]*?)<\/w:tr>/g;
+  for (const block of blocks) {
+    if (block.type === 'tbl') {
+      const fullBlock = block.content;
+      const trRegex = /<w:tr(?:\s(?:[^>]*[^/>])?)?>([\s\S]*?)<\/w:tr>/g;
       let trMatch: RegExpExecArray | null;
       const tableRows: string[][] = [];
       const tableImages: string[] = [];
+      const seenTableImages = new Set<string>();
 
       while ((trMatch = trRegex.exec(fullBlock)) !== null) {
         const trInner = trMatch[1];
-        const tcRegex = /<w:tc(?:\s[^>]*)?>([\s\S]*?)<\/w:tc>/g;
+        const tcRegex = /<w:tc(?:\s(?:[^>]*[^/>])?)?>([\s\S]*?)<\/w:tc>/g;
         let tcMatch: RegExpExecArray | null;
         const rowCells: string[] = [];
 
         while ((tcMatch = tcRegex.exec(trInner)) !== null) {
           const tcInner = tcMatch[1];
-          const pInCellRegex = /<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g;
+          const pInCellRegex = /<w:p(?:\s(?:[^>]*[^/>])?)?>([\s\S]*?)<\/w:p>/g;
           let pCellMatch: RegExpExecArray | null;
           const cellParts: string[] = [];
 
           while ((pCellMatch = pInCellRegex.exec(tcInner)) !== null) {
-            const { text, embeddedImageUri } = extractParagraphContent(
+            const { text, embeddedImageUris } = extractParagraphContent(
               pCellMatch[1],
               relIdToDataUri
             );
             if (text) cellParts.push(text);
-            if (embeddedImageUri) tableImages.push(embeddedImageUri);
+            for (const uri of embeddedImageUris) {
+              if (!seenTableImages.has(uri)) {
+                seenTableImages.add(uri);
+                tableImages.push(uri);
+              }
+            }
           }
 
           rowCells.push(cellParts.join(' ').replace(/\|/g, '/').trim());
@@ -291,13 +652,12 @@ export function parseWordDocumentXmlWithAnswerHighlights(
     }
 
     // Regular paragraph <w:p>
-    const pContent = blockMatch[1] || '';
-    const { text, embeddedImageUri } = extractParagraphContent(pContent, relIdToDataUri);
+    const { text, embeddedImageUris } = extractParagraphContent(block.content, relIdToDataUri);
     if (text) {
       paragraphLines.push(text);
     }
-    if (embeddedImageUri) {
-      paragraphLines.push(`[IMAGE:${embeddedImageUri}]`);
+    for (const imgUri of embeddedImageUris) {
+      paragraphLines.push(`[IMAGE:${imgUri}]`);
     }
   }
 
@@ -337,7 +697,7 @@ export async function generateSampleDocxArrayBuffer(): Promise<ArrayBuffer> {
     '.rels',
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`
   );
 
