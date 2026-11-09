@@ -286,11 +286,16 @@ export default function App() {
   const [activeView, setActiveView] = useState<
     'dashboard' | 'take-exam' | 'create-exam' | 'forbidden'
   >('dashboard');
+  const activeViewRef = useRef(activeView);
+  activeViewRef.current = activeView;
   const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false);
   const [forbiddenReason, setForbiddenReason] = useState<string>('');
   const [activeExamId, setActiveExamId] = useState<string>(
     INITIAL_EXAMS[0]?.id || ''
   );
+  const [returnToExamId, setReturnToExamId] = useState<string | null>(null);
+  const [restoreScrollTrigger, setRestoreScrollTrigger] = useState<number>(0);
+  const libraryScrollYRef = useRef<number>(0);
   const [previewMode, setPreviewMode] = useState<boolean>(false);
   const [reviewingAttempt, setReviewingAttempt] = useState<ExamAttempt | null>(null);
   const [editingExam, setEditingExam] = useState<Exam | null>(null);
@@ -552,13 +557,20 @@ export default function App() {
       );
 
       if (resolved.type === 'dashboard') {
+        const wasInSubView =
+          activeViewRef.current === 'take-exam' ||
+          activeViewRef.current === 'create-exam';
         setActiveView('dashboard');
         if (typeof resolved.openLibrary === 'boolean') {
           setIsLibraryOpen(resolved.openLibrary);
         }
+        if (wasInSubView && resolved.openLibrary) {
+          setRestoreScrollTrigger((prev) => prev + 1);
+        }
         setForbiddenReason('');
       } else if (resolved.type === 'take-exam') {
         setActiveExamId(resolved.examId);
+        setReturnToExamId(resolved.examId);
         setPreviewMode(Boolean(resolved.previewOnly));
         setReviewingAttempt(null);
         setActiveView('take-exam');
@@ -698,14 +710,29 @@ export default function App() {
   const handleOpenLibrary = () => {
     const base = getBasePathname();
     window.history.pushState({}, '', `${base}?view=library`);
+    libraryScrollYRef.current = 0;
+    setReturnToExamId(null);
     setIsLibraryOpen(true);
     setActiveView('dashboard');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleReturnToLibrary = useCallback((focusExamId?: string) => {
+    const base = getBasePathname();
+    window.history.pushState({}, '', `${base}?view=library`);
+    if (focusExamId) {
+      setReturnToExamId(focusExamId);
+    }
+    setIsLibraryOpen(true);
+    setActiveView('dashboard');
+    setRestoreScrollTrigger((prev) => prev + 1);
+  }, []);
+
   const handleCloseLibrary = () => {
     const base = getBasePathname();
     window.history.pushState({}, '', base);
+    libraryScrollYRef.current = 0;
+    setReturnToExamId(null);
     setIsLibraryOpen(false);
     setActiveView('dashboard');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -721,12 +748,14 @@ export default function App() {
       setForbiddenReason('Link đề thi không đúng hoặc đề thi không tồn tại.');
       return;
     }
+    libraryScrollYRef.current = window.scrollY;
+    setReturnToExamId(found.id);
     window.history.pushState({}, '', `${base}?de=${encodeURIComponent(found.id)}`);
     setActiveExamId(found.id);
     setPreviewMode(previewOnly);
     setReviewingAttempt(null);
     setActiveView('take-exam');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
   const handleReviewAttempt = (attempt: ExamAttempt) => {
@@ -736,12 +765,14 @@ export default function App() {
       navigateToUrl(`${base}?de=${encodeURIComponent(attempt.examId)}`);
       return;
     }
+    libraryScrollYRef.current = window.scrollY;
+    setReturnToExamId(attempt.examId);
     window.history.pushState({}, '', `${base}?de=${encodeURIComponent(attempt.examId)}`);
     setActiveExamId(attempt.examId);
     setReviewingAttempt(attempt);
     setPreviewMode(false);
     setActiveView('take-exam');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
   const handleCompleteAttempt = (newAttempt: ExamAttempt) => {
@@ -756,10 +787,11 @@ export default function App() {
       setForbiddenReason('Chỉ Admin mới được phép tạo đề thi.');
       return;
     }
+    libraryScrollYRef.current = window.scrollY;
     window.history.pushState({}, '', `${base}?view=create`);
     setEditingExam(null);
     setActiveView('create-exam');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
   const handleEditExam = (exam: Exam) => {
@@ -770,10 +802,12 @@ export default function App() {
       setForbiddenReason('Chỉ Admin mới được phép chỉnh sửa đề thi.');
       return;
     }
+    libraryScrollYRef.current = window.scrollY;
+    setReturnToExamId(exam.id);
     window.history.pushState({}, '', `${base}?view=create`);
     setEditingExam(exam);
     setActiveView('create-exam');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
   const handleSaveExam = async (
@@ -821,17 +855,16 @@ export default function App() {
 
       const base = getBasePathname();
       if (startImmediately) {
+        setReturnToExamId(normalizedExam.id);
         window.history.pushState({}, '', `${base}?de=${encodeURIComponent(normalizedExam.id)}`);
         setActiveExamId(normalizedExam.id);
         setPreviewMode(false);
         setReviewingAttempt(null);
         setActiveView('take-exam');
+        window.scrollTo({ top: 0, behavior: 'instant' });
       } else {
-        window.history.pushState({}, '', `${base}?view=library`);
-        setIsLibraryOpen(true);
-        setActiveView('dashboard');
+        handleReturnToLibrary(normalizedExam.id);
       }
-      window.scrollTo({ top: 0, behavior: 'smooth' });
       return { ok: true };
     }
 
@@ -873,17 +906,16 @@ export default function App() {
 
     const base = getBasePathname();
     if (startImmediately) {
+      setReturnToExamId(normalizedExam.id);
       window.history.pushState({}, '', `${base}?de=${encodeURIComponent(normalizedExam.id)}`);
       setActiveExamId(normalizedExam.id);
       setPreviewMode(false);
       setReviewingAttempt(null);
       setActiveView('take-exam');
+      window.scrollTo({ top: 0, behavior: 'instant' });
     } else {
-      window.history.pushState({}, '', `${base}?view=library`);
-      setIsLibraryOpen(true);
-      setActiveView('dashboard');
+      handleReturnToLibrary(normalizedExam.id);
     }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
     return { ok: true };
   };
 
@@ -1114,7 +1146,13 @@ export default function App() {
             </main>
           )}
 
-          {(activeView === 'dashboard' || (activeView === 'take-exam' && !currentExam)) && (
+          <div
+            className={
+              activeView === 'dashboard' || (activeView === 'take-exam' && !currentExam)
+                ? 'block'
+                : 'hidden'
+            }
+          >
             <DashboardView
               exams={exams}
               attempts={attempts}
@@ -1144,8 +1182,11 @@ export default function App() {
               onRetrySyncExam={handleRetrySyncExam}
               darkMode={darkMode}
               onToggleDarkMode={handleToggleDarkMode}
+              lastActiveExamId={returnToExamId}
+              savedLibraryScrollY={libraryScrollYRef.current}
+              restoreScrollTrigger={restoreScrollTrigger}
             />
-          )}
+          </div>
 
           {activeView === 'take-exam' && currentExam && (
             <ExamTakeView
@@ -1155,7 +1196,7 @@ export default function App() {
               onCompleteAttempt={handleCompleteAttempt}
               onBackToDashboard={() => {
                 setReviewingAttempt(null);
-                handleOpenLibrary();
+                handleReturnToLibrary(currentExam.id);
               }}
               darkMode={darkMode}
               onToggleDarkMode={handleToggleDarkMode}
@@ -1175,8 +1216,13 @@ export default function App() {
                 editingExam={editingExam}
                 onSaveExam={handleSaveExam}
                 onCancel={() => {
+                  const editedId = editingExam?.id;
                   setEditingExam(null);
-                  handleCloseLibrary();
+                  if (isLibraryOpen || editedId) {
+                    handleReturnToLibrary(editedId);
+                  } else {
+                    handleCloseLibrary();
+                  }
                 }}
                 darkMode={darkMode}
                 onToggleDarkMode={handleToggleDarkMode}

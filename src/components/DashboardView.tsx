@@ -67,6 +67,9 @@ interface DashboardViewProps {
   onRetrySyncExam?: (exam: Exam) => Promise<void>;
   darkMode?: boolean;
   onToggleDarkMode?: () => void;
+  lastActiveExamId?: string | null;
+  savedLibraryScrollY?: number;
+  restoreScrollTrigger?: number;
 }
 
 type SortField = 'id' | 'category' | 'title' | 'date';
@@ -117,6 +120,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onRetrySyncExam,
   darkMode = true,
   onToggleDarkMode,
+  lastActiveExamId = null,
+  savedLibraryScrollY = 0,
+  restoreScrollTrigger = 0,
 }) => {
   const [filterNotDone, setFilterNotDone] = useState<boolean>(true);
   const [filterDone, setFilterDone] = useState<boolean>(true);
@@ -195,6 +201,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isEditingBranding, examPendingDelete]);
+
+  // Khôi phục đúng vị trí cuộn của đề vừa làm khi nhấn Quay lại từ màn hình làm bài / chỉnh sửa
+  useEffect(() => {
+    if (!isLibraryOpen || !restoreScrollTrigger) return;
+    const raf = window.requestAnimationFrame(() => {
+      if (typeof savedLibraryScrollY === 'number' && savedLibraryScrollY > 0) {
+        window.scrollTo({ top: savedLibraryScrollY, behavior: 'instant' });
+      }
+      if (lastActiveExamId) {
+        const nodes = document.querySelectorAll<HTMLElement>('[data-exam-id]');
+        let targetEl: HTMLElement | null = null;
+        nodes.forEach((node) => {
+          const attr = node.getAttribute('data-exam-id') || '';
+          if (
+            (attr === lastActiveExamId ||
+              sanitizeDocId(attr) === sanitizeDocId(lastActiveExamId)) &&
+            node.offsetParent !== null
+          ) {
+            targetEl = node;
+          }
+        });
+        if (targetEl) {
+          const rect = (targetEl as HTMLElement).getBoundingClientRect();
+          const inViewport =
+            rect.top >= 72 && rect.bottom <= window.innerHeight - 24;
+          if (!inViewport || !savedLibraryScrollY) {
+            (targetEl as HTMLElement).scrollIntoView({
+              block: 'center',
+              behavior: 'instant',
+            });
+          }
+        }
+      }
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [isLibraryOpen, restoreScrollTrigger, lastActiveExamId, savedLibraryScrollY]);
 
   const handleSaveBranding = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1191,11 +1233,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 const isCompleted = Boolean(latestAttempt) || isManuallyDone;
                 const isUnsynced =
                   unsyncedSet.has(exam.id) || unsyncedSet.has(sanitizeDocId(exam.id));
+                const isRecentlyActive = Boolean(
+                  lastActiveExamId &&
+                    (exam.id === lastActiveExamId ||
+                      sanitizeDocId(exam.id) === sanitizeDocId(lastActiveExamId))
+                );
 
                 return (
                   <div
                     key={exam.id}
-                    className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs space-y-3"
+                    data-exam-id={exam.id}
+                    className={`bg-white rounded-2xl border p-4 shadow-2xs space-y-3 transition-shadow ${
+                      isRecentlyActive
+                        ? 'border-[#2563eb] ring-2 ring-[#2563eb]/40'
+                        : 'border-slate-200/90'
+                    }`}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-2 min-w-0">
@@ -1405,11 +1457,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       const isCompleted = Boolean(latestAttempt) || isManuallyDone;
                       const isUnsynced =
                         unsyncedSet.has(exam.id) || unsyncedSet.has(sanitizeDocId(exam.id));
+                      const isRecentlyActive = Boolean(
+                        lastActiveExamId &&
+                          (exam.id === lastActiveExamId ||
+                            sanitizeDocId(exam.id) === sanitizeDocId(lastActiveExamId))
+                      );
 
                       return (
                         <tr
                           key={exam.id}
-                          className="hover:bg-slate-50/80 transition-colors"
+                          data-exam-id={exam.id}
+                          className={`hover:bg-slate-50/80 transition-colors ${
+                            isRecentlyActive
+                              ? 'bg-blue-50/60 ring-1 ring-inset ring-[#2563eb]/50'
+                              : ''
+                          }`}
                         >
                           {/* ID */}
                           <td className="py-3.5 px-5 text-xs font-semibold text-slate-500 tabular-nums">

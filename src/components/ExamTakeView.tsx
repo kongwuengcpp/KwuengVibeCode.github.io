@@ -128,6 +128,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   const [remainingSeconds, setRemainingSeconds] = useState<number>(totalSeconds);
   const startTimeRef = useRef<number>(Date.now());
   const deadlineRef = useRef<number>(Date.now() + totalSeconds * 1000);
+  const questionListScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (initialAttempt) {
@@ -456,6 +457,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     setIsStarted(false);
     setMobilePaletteOpen(false);
     onCompleteAttempt(graded);
+    questionListScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -515,6 +517,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     const now = Date.now();
     startTimeRef.current = now;
     deadlineRef.current = now + nextDurationSec * 1000;
+    questionListScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -629,7 +632,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#f8fafc] text-slate-900">
+    <div className="min-h-screen lg:h-screen lg:overflow-hidden flex flex-col bg-[#f8fafc] text-slate-900">
       {/* Lightbox Modal for Enlarged Question Image */}
       {zoomedImageUrl && (
         <div
@@ -898,7 +901,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
       )}
 
       {/* Compact Sticky Header matching Trang chủ & Thư Viện Đề Thi */}
-      <header className="bg-white border-b border-slate-200 px-3 sm:px-6 py-2.5 sm:py-3.5 flex items-center justify-between gap-2 sm:gap-4 sticky top-0 z-30">
+      <header className="bg-white border-b border-slate-200 px-3 sm:px-6 py-2.5 sm:py-3.5 flex items-center justify-between gap-2 sm:gap-4 sticky top-0 z-30 shrink-0">
         <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
           <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-blue-50 border border-blue-100 text-[#2563eb] flex items-center justify-center shrink-0">
             <GraduationCap className="w-5 h-5" />
@@ -965,13 +968,20 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
         </div>
       </header>
 
-      <main className="max-w-[1380px] w-full mx-auto px-3 sm:px-6 pt-4 sm:pt-6 pb-24 lg:pb-8 flex-1">
-        {/* Instant Result Summary Panel */}
-        {isSubmitted && attemptResult && (
-          <section
-            aria-label="Kết quả chấm bài"
-            className="mb-5 sm:mb-6 bg-white rounded-2xl sm:rounded-3xl border border-slate-200/90 shadow-md shadow-slate-200/40 p-4 sm:p-8"
+      <main className="max-w-[1380px] w-full mx-auto px-3 sm:px-6 pt-4 sm:pt-5 pb-24 lg:pb-5 flex-1 lg:min-h-0 lg:flex lg:flex-col lg:overflow-hidden">
+        {/* Main 2-Column Exam Layout (Independent Scroll on PC lg+) */}
+        <div className="flex flex-col lg:flex-row items-start lg:items-stretch gap-6 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
+          {/* Left Column: Independent Scrollable Exam Content & Result Summary */}
+          <div
+            ref={questionListScrollRef}
+            className="w-full flex-1 lg:h-full lg:overflow-y-auto lg:pr-1.5 space-y-5"
           >
+            {/* Instant Result Summary Panel */}
+            {isSubmitted && attemptResult && (
+              <section
+                aria-label="Kết quả chấm bài"
+                className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200/90 shadow-md shadow-slate-200/40 p-4 sm:p-8"
+              >
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5 sm:gap-6 pb-5 sm:pb-6 border-b border-slate-100">
               <div className="flex items-start gap-3.5 sm:gap-4">
                 <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-[#2563eb] shrink-0">
@@ -1089,10 +1099,8 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
           </section>
         )}
 
-        {/* Main 2-Column Exam Layout */}
-        <div className="flex flex-col lg:flex-row items-start gap-6">
-          {/* Left Column: Exam Card & Questions List */}
-          <div className="w-full flex-1 bg-white rounded-2xl sm:rounded-3xl border border-slate-200/80 shadow-md shadow-slate-200/40 p-4 sm:p-8">
+            {/* Exam Card & Questions List */}
+            <div className="w-full bg-white rounded-2xl sm:rounded-3xl border border-slate-200/80 shadow-md shadow-slate-200/40 p-4 sm:p-8">
             <div className="pb-4 sm:pb-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg sm:text-2xl font-extrabold text-[#1e293b] leading-snug">
@@ -1696,13 +1704,14 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
           );
         })
       )}
-    </div>
-  </div>
+            </div>
+          </div>
+          </div>
 
-          {/* Right Sticky Sidebar: Question Palette & Controls (Homepage Card Style) */}
-          <aside className="w-full lg:w-[340px] shrink-0 lg:sticky lg:top-20">
-            <div className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200/80 shadow-md shadow-slate-200/40 overflow-hidden">
-              <div className="bg-slate-50/80 border-b border-slate-200/80 px-5 py-3.5 flex items-center justify-between">
+          {/* Right Sidebar: Independent Scrollable Question Palette & Controls on PC */}
+          <aside className="w-full lg:w-[340px] shrink-0 lg:h-full lg:flex lg:flex-col lg:min-h-0">
+            <div className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200/80 shadow-md shadow-slate-200/40 overflow-hidden lg:max-h-full lg:flex lg:flex-col">
+              <div className="bg-slate-50/80 border-b border-slate-200/80 px-5 py-3.5 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-2.5">
                   <span className="w-7 h-7 rounded-lg bg-blue-50 border border-blue-200/70 text-[#2563eb] flex items-center justify-center font-bold text-xs">
                     <LayoutGrid className="w-4 h-4" />
@@ -1730,7 +1739,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
               </div>
 
               {!sidebarCollapsed && (
-                <div className="p-5 space-y-4">
+                <div className="p-5 space-y-4 lg:overflow-y-auto lg:flex-1 lg:min-h-0">
                   {/* Pastel Option Cards matching Homepage style */}
                   <div className="space-y-2.5">
                     <div className="rounded-xl border border-amber-200/80 bg-amber-50/50 p-3 flex items-center justify-between gap-2">
