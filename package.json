@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test \"src/**/*.test.ts\""
+    "test": "tsx --test src/firebase.test.ts src/utils/docxHelper.test.ts src/utils/examParser.test.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
