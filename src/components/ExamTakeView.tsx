@@ -130,8 +130,11 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   const deadlineRef = useRef<number>(Date.now() + totalSeconds * 1000);
   const questionListScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // Ẩn thanh cuộn ngoài của trình duyệt trên PC để chỉ giữ 2 vùng cuộn độc lập
+  // Ẩn thanh cuộn ngoài của trình duyệt trên PC và đặt lại vị trí đầu trang để không bị lệch header
   useEffect(() => {
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
     document.documentElement.classList.add('exam-pc-independent-scroll');
     return () => {
       document.documentElement.classList.remove('exam-pc-independent-scroll');
@@ -532,7 +535,16 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   const scrollToQuestion = (questionNumber: number) => {
     setMobilePaletteOpen(false);
     const el = document.getElementById(`question-block-${questionNumber}`);
-    if (el) {
+    if (!el) return;
+    const container = questionListScrollRef.current;
+    if (container && window.matchMedia('(min-width: 1024px)').matches) {
+      const top =
+        el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+      container.scrollTo({
+        top: Math.max(0, top - (container.clientHeight - el.offsetHeight) / 2),
+        behavior: 'smooth',
+      });
+    } else {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   };
@@ -982,7 +994,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
           {/* Left Column: Independent Scrollable Exam Content & Result Summary */}
           <div
             ref={questionListScrollRef}
-            className="w-full flex-1 lg:h-full lg:overflow-y-auto lg:pr-2 space-y-5 custom-scroll"
+            className="relative w-full flex-1 lg:h-full lg:overflow-y-auto lg:pr-2 space-y-5 custom-scroll"
           >
             {/* Instant Result Summary Panel */}
             {isSubmitted && attemptResult && (
@@ -1432,7 +1444,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
                             return (
                               <label
                                 key={optKey}
-                                className={`flex items-start gap-3 text-[14.5px] sm:text-[15px] min-h-[44px] transition-colors select-none ${
+                                className={`relative flex items-start gap-3 text-[14.5px] sm:text-[15px] min-h-[44px] transition-colors select-none ${
                                   isSubmitted ? 'cursor-default' : 'cursor-pointer'
                                 } ${rowStyle}`}
                               >
@@ -1747,7 +1759,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
               </div>
 
               {!sidebarCollapsed && (
-                <div className="p-5 space-y-4 lg:overflow-y-auto lg:flex-1 lg:min-h-0 custom-scroll">
+                <div className="relative p-5 space-y-4 lg:overflow-y-auto lg:flex-1 lg:min-h-0 custom-scroll">
                   {/* Pastel Option Cards matching Homepage style */}
                   <div className="space-y-2.5">
                     <div className="rounded-xl border border-amber-200/80 bg-amber-50/50 p-3 flex items-center justify-between gap-2">
