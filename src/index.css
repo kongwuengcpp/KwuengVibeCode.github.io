@@ -248,3 +248,77 @@ html.dark .text-rose-900,
 html.dark .text-rose-950 {
   color: #fda4af !important;
 }
+
+/* Lock outer browser scrollbar on PC when taking an exam so only the 2 independent panes scroll */
+@media (min-width: 1024px) {
+  html.exam-pc-independent-scroll,
+  html.exam-pc-independent-scroll body {
+    height: 100vh !important;
+    max-height: 100vh !important;
+    overflow: hidden !important;
+  }
+
+  .custom-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+  }
+
+  .custom-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .custom-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(148, 163, 184, 0.35);
+    border-radius: 9999px;
+  }
+
+  .custom-scroll:hover::-webkit-scrollbar-thumb {
+    background-color: rgba(148, 163, 184, 0.6);
+  }
+
+  html.dark .custom-scroll {
+    scrollbar-color: rgba(71, 85, 105, 0.65) transparent;
+  }
+
+  html.dark .custom-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(71, 85, 105, 0.65);
+  }
+
+  html.dark .custom-scroll:hover::-webkit-scrollbar-thumb {
+    background-color: rgba(100, 116, 139, 0.9);
+  }
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Ẩn hoàn toàn thanh cuộn hiển thị trên giao diện điện thoại / màn hình nhỏ (< 1024px) */
+@media (max-width: 1023px) {
+  html,
+  body,
+  * {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+
+  html::-webkit-scrollbar,
+  body::-webkit-scrollbar,
+  *::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+}

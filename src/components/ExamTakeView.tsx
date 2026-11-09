@@ -130,6 +130,14 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   const deadlineRef = useRef<number>(Date.now() + totalSeconds * 1000);
   const questionListScrollRef = useRef<HTMLDivElement | null>(null);
 
+  // Ẩn thanh cuộn ngoài của trình duyệt trên PC để chỉ giữ 2 vùng cuộn độc lập
+  useEffect(() => {
+    document.documentElement.classList.add('exam-pc-independent-scroll');
+    return () => {
+      document.documentElement.classList.remove('exam-pc-independent-scroll');
+    };
+  }, []);
+
   useEffect(() => {
     if (initialAttempt) {
       setAnswers({ ...initialAttempt.answers });
@@ -974,7 +982,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
           {/* Left Column: Independent Scrollable Exam Content & Result Summary */}
           <div
             ref={questionListScrollRef}
-            className="w-full flex-1 lg:h-full lg:overflow-y-auto lg:pr-1.5 space-y-5"
+            className="w-full flex-1 lg:h-full lg:overflow-y-auto lg:pr-2 space-y-5 custom-scroll"
           >
             {/* Instant Result Summary Panel */}
             {isSubmitted && attemptResult && (
@@ -1739,7 +1747,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
               </div>
 
               {!sidebarCollapsed && (
-                <div className="p-5 space-y-4 lg:overflow-y-auto lg:flex-1 lg:min-h-0">
+                <div className="p-5 space-y-4 lg:overflow-y-auto lg:flex-1 lg:min-h-0 custom-scroll">
                   {/* Pastel Option Cards matching Homepage style */}
                   <div className="space-y-2.5">
                     <div className="rounded-xl border border-amber-200/80 bg-amber-50/50 p-3 flex items-center justify-between gap-2">

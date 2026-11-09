@@ -1113,8 +1113,20 @@ export default function App() {
         handleOpenLibrary();
       }}
     >
-      <div className="min-h-screen flex flex-col bg-[#f8fafc] text-slate-900">
-        <div className="flex-1">
+      <div
+        className={`min-h-screen flex flex-col bg-[#f8fafc] text-slate-900 ${
+          activeView === 'take-exam' && currentExam
+            ? 'lg:h-screen lg:max-h-screen lg:overflow-hidden'
+            : ''
+        }`}
+      >
+        <div
+          className={`flex-1 ${
+            activeView === 'take-exam' && currentExam
+              ? 'lg:min-h-0 lg:overflow-hidden'
+              : ''
+          }`}
+        >
           {activeView === 'forbidden' && (
             <main className="max-w-xl mx-auto px-4 py-20 text-center">
               <div className="bg-white rounded-3xl border border-slate-200/80 shadow-md shadow-slate-200/40 p-10 space-y-5">
