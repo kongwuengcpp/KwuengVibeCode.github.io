@@ -130,11 +130,22 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   const deadlineRef = useRef<number>(Date.now() + totalSeconds * 1000);
   const questionListScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // Ẩn thanh cuộn ngoài của trình duyệt trên PC và đặt lại vị trí đầu trang để không bị lệch header
-  useEffect(() => {
-    window.scrollTo(0, 0);
+  const scrollToTopInstant = () => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
+    questionListScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      questionListScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    });
+  };
+
+  // Ẩn thanh cuộn ngoài của trình duyệt trên PC và đặt lại vị trí đầu trang để không bị lệch header
+  useEffect(() => {
+    scrollToTopInstant();
     document.documentElement.classList.add('exam-pc-independent-scroll');
     return () => {
       document.documentElement.classList.remove('exam-pc-independent-scroll');
@@ -142,6 +153,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   }, []);
 
   useEffect(() => {
+    scrollToTopInstant();
     if (initialAttempt) {
       setAnswers({ ...initialAttempt.answers });
       setConfirmedQuestions({});
@@ -336,14 +348,18 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
         });
       }
     }
+    let finalQuestions = activeQuestions;
     if (restoredQuestions.length === exam.questions.length) {
-      setActiveQuestions(
-        restoredQuestions.map((q, idx) => ({ ...q, number: idx + 1 }))
-      );
+      finalQuestions = restoredQuestions.map((q, idx) => ({
+        ...q,
+        number: idx + 1,
+      }));
+      setActiveQuestions(finalQuestions);
     }
+    const restoredAnswers = saved.answers || {};
     setShuffleQuestions(Boolean(saved.shuffleQuestions));
     setShuffleOptions(Boolean(saved.shuffleOptions));
-    setAnswers(saved.answers || {});
+    setAnswers(restoredAnswers);
     setConfirmedQuestions(saved.confirmedQuestions || {});
     deadlineRef.current = saved.deadline;
     startTimeRef.current = saved.startedAt || Date.now();
@@ -353,6 +369,26 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     setIsStarted(true);
     setIsSubmitted(false);
     setSavedProgressToResume(null);
+
+    // Tìm câu xa nhất đã trả lời ở lần làm trước và nhảy tới câu đó
+    let furthestNumber = 0;
+    for (const q of finalQuestions) {
+      if (isQuestionAnswered(q, restoredAnswers[q.id])) {
+        if (q.number > furthestNumber) {
+          furthestNumber = q.number;
+        }
+      }
+    }
+
+    if (furthestNumber > 0) {
+      window.requestAnimationFrame(() => {
+        window.setTimeout(() => {
+          scrollToQuestion(furthestNumber);
+        }, 60);
+      });
+    } else {
+      scrollToTopInstant();
+    }
   };
 
   const handleDiscardSavedProgress = () => {
@@ -362,10 +398,13 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
       // ignore
     }
     setSavedProgressToResume(null);
+    setAnswers({});
+    setConfirmedQuestions({});
     const now = Date.now();
     startTimeRef.current = now;
     deadlineRef.current = now + exam.durationMinutes * 60 * 1000;
     setRemainingSeconds(exam.durationMinutes * 60);
+    scrollToTopInstant();
   };
 
   const ensureExamStarted = () => {
@@ -528,8 +567,7 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
     const now = Date.now();
     startTimeRef.current = now;
     deadlineRef.current = now + nextDurationSec * 1000;
-    questionListScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    scrollToTopInstant();
   };
 
   const scrollToQuestion = (questionNumber: number) => {
