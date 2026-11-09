@@ -114,6 +114,7 @@ const DELETED_EXAMS_STORAGE_KEY = 'luyende_deleted_exam_ids_v1';
 const PENDING_SAVE_STORAGE_KEY = 'luyende_pending_save_ids_v1';
 const ATTEMPTS_STORAGE_KEY = 'luyende_online_attempts_prod_v1';
 const BRANDING_STORAGE_KEY = 'luyende_site_branding_v1';
+const DARK_MODE_STORAGE_KEY = 'luyende_dark_mode_v2';
 const LEGACY_KEYS_TO_CLEAR = [
   'baitaptracnghiem_exams_v3',
   'baitaptracnghiem_attempts_v3',
@@ -297,6 +298,27 @@ export default function App() {
   const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
   const [cloudSynced, setCloudSynced] = useState<boolean>(false);
   const [syncFeedbackMessage, setSyncFeedbackMessage] = useState<string | null>(null);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(DARK_MODE_STORAGE_KEY);
+      return saved ? saved !== 'false' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    try {
+      localStorage.setItem(DARK_MODE_STORAGE_KEY, String(darkMode));
+    } catch {
+      // ignore
+    }
+  }, [darkMode]);
+
+  const handleToggleDarkMode = useCallback(() => {
+    setDarkMode((prev) => !prev);
+  }, []);
 
   const [branding, setBranding] = useState<SiteBranding>(() => {
     try {
@@ -1120,6 +1142,8 @@ export default function App() {
               onDismissSyncFeedback={() => showFeedback(null)}
               unsyncedExamIds={unsyncedExamIds}
               onRetrySyncExam={handleRetrySyncExam}
+              darkMode={darkMode}
+              onToggleDarkMode={handleToggleDarkMode}
             />
           )}
 
@@ -1133,6 +1157,8 @@ export default function App() {
                 setReviewingAttempt(null);
                 handleOpenLibrary();
               }}
+              darkMode={darkMode}
+              onToggleDarkMode={handleToggleDarkMode}
             />
           )}
 
@@ -1152,6 +1178,8 @@ export default function App() {
                   setEditingExam(null);
                   handleCloseLibrary();
                 }}
+                darkMode={darkMode}
+                onToggleDarkMode={handleToggleDarkMode}
               />
             </Suspense>
           )}

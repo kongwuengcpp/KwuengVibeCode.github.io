@@ -20,6 +20,8 @@ import {
   Check,
   LayoutGrid,
   ChevronRight,
+  Moon,
+  Sun,
 } from 'lucide-react';
 import {
   Exam,
@@ -52,6 +54,8 @@ interface ExamTakeViewProps {
   previewMode?: boolean;
   onCompleteAttempt: (attempt: ExamAttempt) => void;
   onBackToDashboard: () => void;
+  darkMode?: boolean;
+  onToggleDarkMode?: () => void;
 }
 
 interface SavedInProgressAttempt {
@@ -80,6 +84,8 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
   previewMode = false,
   onCompleteAttempt,
   onBackToDashboard,
+  darkMode = true,
+  onToggleDarkMode,
 }) => {
   const [answers, setAnswers] = useState<Record<string, UserAnswerValue>>(
     initialAttempt ? { ...initialAttempt.answers } : {}
@@ -928,6 +934,22 @@ export const ExamTakeView: React.FC<ExamTakeViewProps> = ({
               className="hidden sm:inline-flex px-4 py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold uppercase tracking-wide shadow-xs transition-colors cursor-pointer whitespace-nowrap"
             >
               NỘP BÀI ({answeredCount}/{exam.questions.length})
+            </button>
+          )}
+
+          {onToggleDarkMode && (
+            <button
+              type="button"
+              onClick={onToggleDarkMode}
+              aria-label={darkMode ? 'Chuyển sang chế độ sáng' : 'Chuyển sang chế độ tối'}
+              title={darkMode ? 'Chế độ sáng' : 'Chế độ tối'}
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+            >
+              {darkMode ? (
+                <Sun className="w-4 h-4 text-amber-400" />
+              ) : (
+                <Moon className="w-4 h-4" />
+              )}
             </button>
           )}
 

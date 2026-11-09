@@ -14,6 +14,8 @@ import {
   Shuffle,
   Box,
   ArrowLeft,
+  Moon,
+  Sun,
 } from 'lucide-react';
 import {
   Exam,
@@ -97,6 +99,8 @@ interface CreateExamViewProps {
     saveOfflineOnly?: boolean
   ) => Promise<{ ok: boolean; error?: string; offlineAvailable?: boolean }>;
   onCancel: () => void;
+  darkMode?: boolean;
+  onToggleDarkMode?: () => void;
 }
 
 type DigitizerTab = 'docx' | 'pdf' | 'ocr' | 'text';
@@ -122,6 +126,8 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
   editingExam = null,
   onSaveExam,
   onCancel,
+  darkMode = true,
+  onToggleDarkMode,
 }) => {
   const [mode, setMode] = useState<'digitize' | 'manual'>(
     editingExam ? 'manual' : 'digitize'
@@ -613,6 +619,22 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                   <span>{isSaving ? 'Đang lưu...' : 'Lưu & Làm bài ngay'}</span>
                 </button>
               </>
+            )}
+
+            {onToggleDarkMode && (
+              <button
+                type="button"
+                onClick={onToggleDarkMode}
+                aria-label={darkMode ? 'Chuyển sang chế độ sáng' : 'Chuyển sang chế độ tối'}
+                title={darkMode ? 'Chế độ sáng' : 'Chế độ tối'}
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+              >
+                {darkMode ? (
+                  <Sun className="w-4 h-4 text-amber-400" />
+                ) : (
+                  <Moon className="w-4 h-4" />
+                )}
+              </button>
             )}
 
             <button

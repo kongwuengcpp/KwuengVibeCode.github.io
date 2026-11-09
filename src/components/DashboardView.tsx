@@ -65,6 +65,8 @@ interface DashboardViewProps {
   onDismissSyncFeedback?: () => void;
   unsyncedExamIds?: string[];
   onRetrySyncExam?: (exam: Exam) => Promise<void>;
+  darkMode?: boolean;
+  onToggleDarkMode?: () => void;
 }
 
 type SortField = 'id' | 'category' | 'title' | 'date';
@@ -113,6 +115,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onDismissSyncFeedback,
   unsyncedExamIds = [],
   onRetrySyncExam,
+  darkMode = true,
+  onToggleDarkMode,
 }) => {
   const [filterNotDone, setFilterNotDone] = useState<boolean>(true);
   const [filterDone, setFilterDone] = useState<boolean>(true);
@@ -153,7 +157,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [copiedExamId, setCopiedExamId] = useState<string | null>(null);
   const [showAdminHint, setShowAdminHint] = useState<boolean>(false);
-  const [darkAccent, setDarkAccent] = useState<boolean>(false);
   const [isEditingBranding, setIsEditingBranding] = useState<boolean>(false);
   const [examPendingDelete, setExamPendingDelete] = useState<Exam | null>(null);
   const [editTitle, setEditTitle] = useState<string>(branding.title);
@@ -431,11 +434,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // VIEW 1: Centered Landing Card (Reference Image 1)
   if (!isLibraryOpen) {
     return (
-      <main
-        className={`min-h-screen flex flex-col items-center justify-center p-4 sm:p-6 relative transition-colors ${
-          darkAccent ? 'bg-slate-900 text-slate-100' : 'bg-[#f8fafc] text-slate-900'
-        }`}
-      >
+      <main className="min-h-screen flex flex-col items-center justify-center p-4 sm:p-6 relative transition-colors bg-[#f8fafc] text-slate-900">
         {/* Top-Right Utility Buttons */}
         <div className="fixed top-3.5 right-4 sm:top-4 sm:right-5 flex items-center gap-2 z-20">
           <button
@@ -449,12 +448,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setDarkAccent((prev) => !prev)}
-            aria-label="Đổi giao diện sáng tối"
-            title="Đổi nền sáng / tối"
+            onClick={() => onToggleDarkMode?.()}
+            aria-label={darkMode ? 'Chuyển sang chế độ sáng' : 'Chuyển sang chế độ tối'}
+            title={darkMode ? 'Chế độ sáng' : 'Chế độ tối'}
             className="w-10 h-10 rounded-full bg-white border border-slate-200/90 shadow-xs flex items-center justify-center text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer"
           >
-            {darkAccent ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4" />}
+            {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
           </button>
         </div>
 
@@ -939,6 +938,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <span className="sm:hidden">TẠO ĐỀ</span>
                 </button>
               </>
+            )}
+
+            {onToggleDarkMode && (
+              <button
+                type="button"
+                onClick={onToggleDarkMode}
+                aria-label={darkMode ? 'Chuyển sang chế độ sáng' : 'Chuyển sang chế độ tối'}
+                title={darkMode ? 'Chế độ sáng' : 'Chế độ tối'}
+                className="w-9 h-9 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+              >
+                {darkMode ? (
+                  <Sun className="w-4 h-4 text-amber-400" />
+                ) : (
+                  <Moon className="w-4 h-4" />
+                )}
+              </button>
             )}
 
             <button
