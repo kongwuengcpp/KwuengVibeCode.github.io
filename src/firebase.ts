@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
   doc,
   getDocs,
   setDoc,
@@ -19,7 +20,22 @@ import { Exam, ExamCategory, SiteBranding, DEFAULT_SITE_BRANDING } from './types
 import { DEFAULT_ADMIN_KEY } from './utils/accessControl';
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+function createFirestoreInstance() {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        experimentalAutoDetectLongPolling: true,
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
+}
+
+export const db = createFirestoreInstance();
 export const auth = getAuth(app);
 
 export enum OperationType {
@@ -428,92 +444,132 @@ function getExamCreationSortValue(exam: Exam): number {
   return 0;
 }
 
+export function parseExamsSnapshot(snapshot: QuerySnapshot<DocumentData>): Exam[] {
+  const list: Exam[] = [];
+  snapshot.forEach((docSnap: QueryDocumentSnapshot<DocumentData>) => {
+    const docId = docSnap.id;
+    const data = docSnap.data();
+    if (IGNORED_EXAM_IDS.has(docId) || (data && IGNORED_EXAM_IDS.has(String(data.id || '')))) {
+      return;
+    }
+    if (data && Array.isArray(data.questions)) {
+      const canonicalId = docId || String(data.id || '');
+      if (!canonicalId) return;
+      const normalizedQuestions: Exam['questions'] = data.questions.map(
+        (rawQ: Record<string, unknown>, idx: number) => {
+          const qType =
+            rawQ?.type === 'multiple' || rawQ?.type === 'short' ? rawQ.type : 'single';
+          const rawOpts =
+            rawQ?.options && typeof rawQ.options === 'object'
+              ? (rawQ.options as Record<string, unknown>)
+              : {};
+          return {
+            id: String(rawQ?.id || `q-${idx + 1}`),
+            number: Number(rawQ?.number) || idx + 1,
+            type: qType,
+            text: String(rawQ?.text || `Câu hỏi ${idx + 1}`),
+            imageUrl:
+              typeof rawQ?.imageUrl === 'string' && rawQ.imageUrl.trim()
+                ? rawQ.imageUrl.trim()
+                : undefined,
+            tableData: normalizeQuestionTableData(rawQ?.tableData),
+            options: {
+              A: String(rawOpts.A ?? (qType === 'short' ? '' : 'Phương án A')),
+              B: String(rawOpts.B ?? (qType === 'short' ? '' : 'Phương án B')),
+              C: String(rawOpts.C ?? (qType === 'short' ? '' : 'Phương án C')),
+              D: String(rawOpts.D ?? (qType === 'short' ? '' : 'Phương án D')),
+            },
+            correctAnswer: ['A', 'B', 'C', 'D'].includes(String(rawQ?.correctAnswer))
+              ? (String(rawQ?.correctAnswer) as 'A' | 'B' | 'C' | 'D')
+              : 'A',
+            correctAnswers: Array.isArray(rawQ?.correctAnswers)
+              ? (rawQ.correctAnswers.filter((k: unknown) =>
+                  ['A', 'B', 'C', 'D'].includes(String(k))
+                ) as ('A' | 'B' | 'C' | 'D')[])
+              : undefined,
+            shortAnswer:
+              typeof rawQ?.shortAnswer === 'string' ? rawQ.shortAnswer : undefined,
+            explanation:
+              typeof rawQ?.explanation === 'string' ? rawQ.explanation : undefined,
+          };
+        }
+      );
+
+      list.push({
+        id: canonicalId,
+        examCode: deriveExamCode(
+          canonicalId,
+          typeof data.examCode === 'string' ? data.examCode : undefined
+        ),
+        title: String(data.title || 'Đề thi'),
+        category: String(data.category || 'Lịch sử') as ExamCategory,
+        durationMinutes: Number(data.durationMinutes) || 45,
+        createdAt: String(data.createdAt || '07/11/2026'),
+        uploadTime:
+          typeof data.uploadTime === 'string' && data.uploadTime.trim()
+            ? data.uploadTime.trim()
+            : '11:30',
+        questions: normalizedQuestions,
+        shuffleQuestions: Boolean(data.shuffleQuestions),
+        shuffleOptions: Boolean(data.shuffleOptions),
+        isFavorite: Boolean(data.isFavorite),
+      });
+    }
+  });
+
+  list.sort((a, b) => {
+    const diff = getExamCreationSortValue(b) - getExamCreationSortValue(a);
+    if (diff !== 0) return diff;
+    return b.id.localeCompare(a.id);
+  });
+
+  return list;
+}
+
+export async function fetchExamsFromCloudOnce(): Promise<{
+  ok: boolean;
+  exams: Exam[];
+  error?: string;
+}> {
+  const path = 'exams';
+  try {
+    const snap = await getDocs(collection(db, 'exams'));
+    const list = parseExamsSnapshot(snap);
+    return { ok: true, exams: list };
+  } catch (error) {
+    try {
+      handleFirestoreError(error, OperationType.LIST, path);
+    } catch {
+      // Logged via handleFirestoreError
+    }
+    return { ok: false, exams: [], error: describeFirestoreError(error) };
+  }
+}
+
 export function subscribeToCloudExams(
-  onUpdate: (exams: Exam[]) => void
+  onUpdate: (exams: Exam[]) => void,
+  onError?: (errorMsg: string) => void
 ): () => void {
   const path = 'exams';
-  return onSnapshot(
+  let cancelled = false;
+
+  const unsubscribe = onSnapshot(
     collection(db, 'exams'),
     (snapshot: QuerySnapshot<DocumentData>) => {
-      const list: Exam[] = [];
-      snapshot.forEach((docSnap: QueryDocumentSnapshot<DocumentData>) => {
-        const docId = docSnap.id;
-        const data = docSnap.data();
-        if (IGNORED_EXAM_IDS.has(docId) || (data && IGNORED_EXAM_IDS.has(String(data.id || '')))) {
-          void deleteDoc(doc(db, 'exams', docId)).catch(() => {});
-          return;
-        }
-        if (data && Array.isArray(data.questions)) {
-          const canonicalId = docId || String(data.id || '');
-          if (!canonicalId) return;
-          const normalizedQuestions: Exam['questions'] = data.questions.map(
-            (rawQ: Record<string, unknown>, idx: number) => {
-              const qType =
-                rawQ?.type === 'multiple' || rawQ?.type === 'short' ? rawQ.type : 'single';
-              const rawOpts =
-                rawQ?.options && typeof rawQ.options === 'object'
-                  ? (rawQ.options as Record<string, unknown>)
-                  : {};
-              return {
-                id: String(rawQ?.id || `q-${idx + 1}`),
-                number: Number(rawQ?.number) || idx + 1,
-                type: qType,
-                text: String(rawQ?.text || `Câu hỏi ${idx + 1}`),
-                imageUrl:
-                  typeof rawQ?.imageUrl === 'string' && rawQ.imageUrl.trim()
-                    ? rawQ.imageUrl.trim()
-                    : undefined,
-                tableData: normalizeQuestionTableData(rawQ?.tableData),
-                options: {
-                  A: String(rawOpts.A ?? (qType === 'short' ? '' : 'Phương án A')),
-                  B: String(rawOpts.B ?? (qType === 'short' ? '' : 'Phương án B')),
-                  C: String(rawOpts.C ?? (qType === 'short' ? '' : 'Phương án C')),
-                  D: String(rawOpts.D ?? (qType === 'short' ? '' : 'Phương án D')),
-                },
-                correctAnswer: ['A', 'B', 'C', 'D'].includes(String(rawQ?.correctAnswer))
-                  ? (String(rawQ?.correctAnswer) as 'A' | 'B' | 'C' | 'D')
-                  : 'A',
-                correctAnswers: Array.isArray(rawQ?.correctAnswers)
-                  ? (rawQ.correctAnswers.filter((k: unknown) =>
-                      ['A', 'B', 'C', 'D'].includes(String(k))
-                    ) as ('A' | 'B' | 'C' | 'D')[])
-                  : undefined,
-                shortAnswer:
-                  typeof rawQ?.shortAnswer === 'string' ? rawQ.shortAnswer : undefined,
-                explanation:
-                  typeof rawQ?.explanation === 'string' ? rawQ.explanation : undefined,
-              };
-            }
-          );
-
-          list.push({
-            id: canonicalId,
-            examCode: deriveExamCode(
-              canonicalId,
-              typeof data.examCode === 'string' ? data.examCode : undefined
-            ),
-            title: String(data.title || 'Đề thi'),
-            category: String(data.category || 'Lịch sử') as ExamCategory,
-            durationMinutes: Number(data.durationMinutes) || 45,
-            createdAt: String(data.createdAt || '07/11/2026'),
-            uploadTime:
-              typeof data.uploadTime === 'string' && data.uploadTime.trim()
-                ? data.uploadTime.trim()
-                : '11:30',
-            questions: normalizedQuestions,
-            shuffleQuestions: Boolean(data.shuffleQuestions),
-            shuffleOptions: Boolean(data.shuffleOptions),
-            isFavorite: Boolean(data.isFavorite),
-          });
-        }
-      });
-
-      list.sort((a, b) => {
-        const diff = getExamCreationSortValue(b) - getExamCreationSortValue(a);
-        if (diff !== 0) return diff;
-        return b.id.localeCompare(a.id);
-      });
-
+      if (cancelled) return;
+      // Avoid wiping out local state with an empty offline-cache snapshot before server responds
+      if (snapshot.empty && snapshot.metadata.fromCache) {
+        void fetchExamsFromCloudOnce().then((res) => {
+          if (cancelled) return;
+          if (res.ok) {
+            onUpdate(res.exams);
+          } else if (res.error) {
+            onError?.(res.error);
+          }
+        });
+        return;
+      }
+      const list = parseExamsSnapshot(snapshot);
       onUpdate(list);
     },
     (error: FirestoreError) => {
@@ -522,8 +578,21 @@ export function subscribeToCloudExams(
       } catch {
         // Logged via handleFirestoreError
       }
+      void fetchExamsFromCloudOnce().then((res) => {
+        if (cancelled) return;
+        if (res.ok) {
+          onUpdate(res.exams);
+        } else {
+          onError?.(res.error || describeFirestoreError(error));
+        }
+      });
     }
   );
+
+  return () => {
+    cancelled = true;
+    unsubscribe();
+  };
 }
 
 export async function saveExamToCloud(exam: Exam): Promise<CloudResult> {

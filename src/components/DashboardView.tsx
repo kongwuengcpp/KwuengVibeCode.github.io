@@ -61,6 +61,9 @@ interface DashboardViewProps {
   onSyncCloud?: () => Promise<void>;
   isSyncingCloud?: boolean;
   cloudSynced?: boolean;
+  isLoadingExams?: boolean;
+  cloudLoadError?: string | null;
+  onReloadFromCloud?: () => Promise<void>;
   syncFeedbackMessage?: string | null;
   onDismissSyncFeedback?: () => void;
   unsyncedExamIds?: string[];
@@ -114,6 +117,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onSyncCloud,
   isSyncingCloud = false,
   cloudSynced = false,
+  isLoadingExams = false,
+  cloudLoadError = null,
+  onReloadFromCloud,
   syncFeedbackMessage,
   onDismissSyncFeedback,
   unsyncedExamIds = [],
@@ -907,8 +913,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <h1 className="text-base sm:text-xl font-extrabold text-slate-800 leading-tight truncate">
                 Thư Viện Đề Thi
               </h1>
-              <p className="text-[11px] sm:text-xs font-medium text-emerald-500 truncate">
-                Đã đồng bộ xong dữ liệu
+              <p
+                className={`text-[11px] sm:text-xs font-medium truncate ${
+                  cloudLoadError
+                    ? 'text-rose-500'
+                    : isLoadingExams && !cloudSynced
+                    ? 'text-amber-500'
+                    : cloudSynced
+                    ? 'text-emerald-500'
+                    : 'text-slate-400'
+                }`}
+              >
+                {cloudLoadError
+                  ? 'Kết nối Cloud bị gián đoạn · Nhấn tải lại'
+                  : isLoadingExams && !cloudSynced
+                  ? 'Đang tải dữ liệu đề thi từ Cloud...'
+                  : cloudSynced
+                  ? 'Đã đồng bộ xong dữ liệu'
+                  : 'Đang kết nối dữ liệu...'}
               </p>
             </div>
           </div>
@@ -1205,18 +1227,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="bg-white rounded-2xl border border-slate-200/90 p-8 text-center space-y-3">
                 <p className="text-sm text-slate-500">
                   {exams.length === 0
-                    ? 'Chưa có đề thi nào trong thư viện.'
+                    ? isLoadingExams
+                      ? 'Đang tải danh sách đề thi từ Cloud...'
+                      : 'Chưa có đề thi nào hiển thị hoặc kết nối mạng bị chặn.'
                     : 'Không tìm thấy đề thi nào phù hợp với bộ lọc hiện tại.'}
                 </p>
-                {isAdmin && exams.length === 0 && (
-                  <button
-                    type="button"
-                    onClick={onCreateNewExam}
-                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#2563eb] text-white text-xs font-bold cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Tạo đề thi đầu tiên</span>
-                  </button>
+                {cloudLoadError && exams.length === 0 && (
+                  <p className="text-xs text-rose-500 font-medium">
+                    Chi tiết: {cloudLoadError}
+                  </p>
+                )}
+                {exams.length === 0 && (
+                  <div className="pt-1 flex flex-wrap items-center justify-center gap-2.5">
+                    {onReloadFromCloud && (
+                      <button
+                        type="button"
+                        disabled={isLoadingExams}
+                        onClick={() => {
+                          void onReloadFromCloud();
+                        }}
+                        className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#2563eb] hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold transition-colors cursor-pointer"
+                      >
+                        <RefreshCw
+                          className={`w-3.5 h-3.5 ${isLoadingExams ? 'animate-spin' : ''}`}
+                        />
+                        <span>
+                          {isLoadingExams ? 'Đang tải từ Cloud...' : 'Tải lại danh sách đề'}
+                        </span>
+                      </button>
+                    )}
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={onCreateNewExam}
+                        className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Tạo đề thi đầu tiên</span>
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ) : (
@@ -1427,18 +1477,50 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <div className="space-y-3">
                           <p>
                             {exams.length === 0
-                              ? 'Chưa có đề thi nào trong thư viện.'
+                              ? isLoadingExams
+                                ? 'Đang tải danh sách đề thi từ Cloud...'
+                                : 'Chưa có đề thi nào trong thư viện.'
                               : 'Không tìm thấy đề thi nào phù hợp với bộ lọc hiện tại.'}
                           </p>
-                          {isAdmin && exams.length === 0 && (
-                            <button
-                              type="button"
-                              onClick={onCreateNewExam}
-                              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 text-white text-xs font-bold transition-colors cursor-pointer"
-                            >
-                              <Plus className="w-4 h-4" />
-                              <span>Tạo đề thi đầu tiên</span>
-                            </button>
+                          {cloudLoadError && exams.length === 0 && (
+                            <p className="text-xs text-rose-500 font-medium">
+                              Chi tiết: {cloudLoadError}
+                            </p>
+                          )}
+                          {exams.length === 0 && (
+                            <div className="pt-1 flex flex-wrap items-center justify-center gap-2.5">
+                              {onReloadFromCloud && (
+                                <button
+                                  type="button"
+                                  disabled={isLoadingExams}
+                                  onClick={() => {
+                                    void onReloadFromCloud();
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#2563eb] hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold transition-colors cursor-pointer"
+                                >
+                                  <RefreshCw
+                                    className={`w-3.5 h-3.5 ${
+                                      isLoadingExams ? 'animate-spin' : ''
+                                    }`}
+                                  />
+                                  <span>
+                                    {isLoadingExams
+                                      ? 'Đang tải từ Cloud...'
+                                      : 'Tải lại danh sách đề từ Cloud'}
+                                  </span>
+                                </button>
+                              )}
+                              {isAdmin && (
+                                <button
+                                  type="button"
+                                  onClick={onCreateNewExam}
+                                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-slate-200 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition-colors cursor-pointer"
+                                >
+                                  <Plus className="w-4 h-4" />
+                                  <span>Tạo đề thi đầu tiên</span>
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
                       </td>

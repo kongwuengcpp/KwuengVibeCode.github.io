@@ -25,6 +25,7 @@ import {
   subscribeToSiteBranding,
   saveSiteBrandingToCloud,
   subscribeToCloudExams,
+  fetchExamsFromCloudOnce,
   saveExamToCloud,
   deleteExamFromCloud,
   syncAllToCloud,
@@ -110,7 +111,6 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 }
 
 const EXAMS_STORAGE_KEY = 'luyende_online_exams_prod_v1';
-const DELETED_EXAMS_STORAGE_KEY = 'luyende_deleted_exam_ids_v1';
 const PENDING_SAVE_STORAGE_KEY = 'luyende_pending_save_ids_v1';
 const ATTEMPTS_STORAGE_KEY = 'luyende_online_attempts_prod_v1';
 const BRANDING_STORAGE_KEY = 'luyende_site_branding_v1';
@@ -119,6 +119,7 @@ const LEGACY_KEYS_TO_CLEAR = [
   'baitaptracnghiem_exams_v3',
   'baitaptracnghiem_attempts_v3',
   'luyende_manual_done_exams_v1',
+  'luyende_deleted_exam_ids_v1',
 ];
 
 declare global {
@@ -144,24 +145,6 @@ function getBasePathname(): string {
   return clean ? `${clean}/` : '/';
 }
 
-function loadDeletedExamIds(): Set<string> {
-  const set = new Set<string>(IGNORED_EXAM_IDS);
-  try {
-    const raw = localStorage.getItem(DELETED_EXAMS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        parsed.forEach((id) => {
-          if (typeof id === 'string' && id) set.add(id);
-        });
-      }
-    }
-  } catch {
-    // ignore
-  }
-  return set;
-}
-
 function loadPendingSaveExamIds(): Set<string> {
   const set = new Set<string>();
   try {
@@ -183,7 +166,8 @@ function loadPendingSaveExamIds(): Set<string> {
 }
 
 export default function App() {
-  const deletedExamIdsRef = useRef<Set<string>>(loadDeletedExamIds());
+  // Keep deletedExamIdsRef in-memory only for the current browser session so stale localStorage never hides exams
+  const deletedExamIdsRef = useRef<Set<string>>(new Set<string>(IGNORED_EXAM_IDS));
   const pendingSaveExamIdsRef = useRef<Set<string>>(loadPendingSaveExamIds());
   const [unsyncedExamIds, setUnsyncedExamIds] = useState<string[]>(() =>
     Array.from(pendingSaveExamIdsRef.current)
@@ -192,14 +176,7 @@ export default function App() {
   const feedbackTimerRef = useRef<number | null>(null);
 
   const persistDeletedIds = useCallback(() => {
-    try {
-      localStorage.setItem(
-        DELETED_EXAMS_STORAGE_KEY,
-        JSON.stringify(Array.from(deletedExamIdsRef.current))
-      );
-    } catch {
-      // ignore
-    }
+    // No-op: deleted IDs are intentionally not persisted to localStorage to prevent stuck empty libraries
   }, []);
 
   const persistPendingSaveIds = useCallback(() => {
@@ -229,7 +206,6 @@ export default function App() {
   const [exams, setExams] = useState<Exam[]>(() => {
     try {
       LEGACY_KEYS_TO_CLEAR.forEach((k) => localStorage.removeItem(k));
-      const deletedSet = loadDeletedExamIds();
       const saved = localStorage.getItem(EXAMS_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -240,15 +216,17 @@ export default function App() {
             if (
               item &&
               typeof item.id === 'string' &&
-              !deletedSet.has(item.id) &&
-              !deletedSet.has(sanitizeDocId(item.id)) &&
+              !IGNORED_EXAM_IDS.has(item.id) &&
+              !IGNORED_EXAM_IDS.has(sanitizeDocId(item.id)) &&
               !seen.has(item.id)
             ) {
               seen.add(item.id);
               cleanList.push(item);
             }
           }
-          return cleanList;
+          if (cleanList.length > 0) {
+            return cleanList;
+          }
         }
       }
     } catch {
@@ -302,6 +280,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
   const [cloudSynced, setCloudSynced] = useState<boolean>(false);
+  const [isLoadingExams, setIsLoadingExams] = useState<boolean>(true);
+  const [cloudLoadError, setCloudLoadError] = useState<string | null>(null);
   const [syncFeedbackMessage, setSyncFeedbackMessage] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     try {
@@ -346,6 +326,79 @@ export default function App() {
   const examsRef = useRef<Exam[]>(exams);
   examsRef.current = exams;
 
+  const applyCloudExamsUpdate = useCallback(
+    (cloudExams: Exam[]) => {
+      setIsLoadingExams(false);
+      setCloudLoadError(null);
+      setCloudSynced(true);
+      setExams((localPrev) => {
+        const filteredCloud: Exam[] = [];
+        const cloudIds = new Set<string>();
+
+        for (const exam of cloudExams) {
+          const safeId = sanitizeDocId(exam.id);
+          if (
+            deletedExamIdsRef.current.has(exam.id) ||
+            deletedExamIdsRef.current.has(safeId) ||
+            IGNORED_EXAM_IDS.has(exam.id) ||
+            IGNORED_EXAM_IDS.has(safeId)
+          ) {
+            continue;
+          }
+          if (!cloudIds.has(exam.id)) {
+            cloudIds.add(exam.id);
+            cloudIds.add(safeId);
+            if (
+              pendingSaveExamIdsRef.current.has(exam.id) ||
+              pendingSaveExamIdsRef.current.has(safeId)
+            ) {
+              pendingSaveExamIdsRef.current.delete(exam.id);
+              pendingSaveExamIdsRef.current.delete(safeId);
+              persistPendingSaveIds();
+            }
+            filteredCloud.push(exam);
+          }
+        }
+
+        // Preserve any exam explicitly saved offline by Admin in this browser
+        const inFlightLocal = localPrev.filter((e) => {
+          if (!e || !e.id) return false;
+          const sid = sanitizeDocId(e.id);
+          return (
+            !cloudIds.has(e.id) &&
+            !cloudIds.has(sid) &&
+            (pendingSaveExamIdsRef.current.has(e.id) ||
+              pendingSaveExamIdsRef.current.has(sid)) &&
+            !deletedExamIdsRef.current.has(e.id) &&
+            !deletedExamIdsRef.current.has(sid)
+          );
+        });
+
+        return [...inFlightLocal, ...filteredCloud];
+      });
+    },
+    [persistPendingSaveIds]
+  );
+
+  const handleReloadExamsFromCloud = useCallback(async () => {
+    setIsLoadingExams(true);
+    setCloudLoadError(null);
+    deletedExamIdsRef.current = new Set<string>(IGNORED_EXAM_IDS);
+    const res = await fetchExamsFromCloudOnce();
+    if (res.ok) {
+      applyCloudExamsUpdate(res.exams);
+      showFeedback(
+        `✅ Đã tải lại danh sách đề từ Cloud (${res.exams.length} đề thi).`,
+        3500
+      );
+    } else {
+      setIsLoadingExams(false);
+      const errMsg = res.error || 'Không thể kết nối tới máy chủ đề thi.';
+      setCloudLoadError(errMsg);
+      showFeedback(`❌ Tải lại danh sách đề thất bại: ${errMsg}`);
+    }
+  }, [applyCloudExamsUpdate, showFeedback]);
+
   const handleUpdateBranding = useCallback(
     async (newBranding: Partial<SiteBranding>) => {
       const updated: SiteBranding = { ...brandingRef.current, ...newBranding };
@@ -357,7 +410,6 @@ export default function App() {
       }
       const res = await saveSiteBrandingToCloud(updated);
       if (res.ok) {
-        setCloudSynced(true);
         showFeedback('✅ Đã lưu và đồng bộ thông tin trang lên Cloud.', 4000);
       } else {
         showFeedback(
@@ -427,7 +479,6 @@ export default function App() {
     const unsubscribe = subscribeToSiteBranding((cloudBranding) => {
       if (cloudBranding) {
         setBranding(cloudBranding);
-        setCloudSynced(true);
         try {
           localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(cloudBranding));
         } catch {
@@ -439,11 +490,7 @@ export default function App() {
           if (localSaved) {
             const parsed = JSON.parse(localSaved);
             if (parsed && typeof parsed === 'object') {
-              void saveSiteBrandingToCloud({ ...DEFAULT_SITE_BRANDING, ...parsed }).then(
-                (r) => {
-                  if (r.ok) setCloudSynced(true);
-                }
-              );
+              void saveSiteBrandingToCloud({ ...DEFAULT_SITE_BRANDING, ...parsed });
             }
           }
         } catch {
@@ -456,62 +503,17 @@ export default function App() {
 
   // Real-time Firestore listener for Shared Exams (/exams)
   useEffect(() => {
-    const unsubscribe = subscribeToCloudExams((cloudExams) => {
-      setCloudSynced(true);
-      setExams((localPrev) => {
-        const filteredCloud: Exam[] = [];
-        const cloudIds = new Set<string>();
-
-        for (const exam of cloudExams) {
-          const safeId = sanitizeDocId(exam.id);
-          if (
-            deletedExamIdsRef.current.has(exam.id) ||
-            deletedExamIdsRef.current.has(safeId) ||
-            IGNORED_EXAM_IDS.has(exam.id) ||
-            IGNORED_EXAM_IDS.has(safeId)
-          ) {
-            if (
-              deletedExamIdsRef.current.has(exam.id) ||
-              deletedExamIdsRef.current.has(safeId)
-            ) {
-              void deleteExamFromCloud(exam.id);
-            }
-            continue;
-          }
-          if (!cloudIds.has(exam.id)) {
-            cloudIds.add(exam.id);
-            cloudIds.add(safeId);
-            if (
-              pendingSaveExamIdsRef.current.has(exam.id) ||
-              pendingSaveExamIdsRef.current.has(safeId)
-            ) {
-              pendingSaveExamIdsRef.current.delete(exam.id);
-              pendingSaveExamIdsRef.current.delete(safeId);
-              persistPendingSaveIds();
-            }
-            filteredCloud.push(exam);
-          }
-        }
-
-        // Preserve any exam explicitly saved offline by Admin in this browser
-        const inFlightLocal = localPrev.filter((e) => {
-          if (!e || !e.id) return false;
-          const sid = sanitizeDocId(e.id);
-          return (
-            !cloudIds.has(e.id) &&
-            !cloudIds.has(sid) &&
-            (pendingSaveExamIdsRef.current.has(e.id) ||
-              pendingSaveExamIdsRef.current.has(sid)) &&
-            !deletedExamIdsRef.current.has(e.id) &&
-            !deletedExamIdsRef.current.has(sid)
-          );
-        });
-
-        return [...inFlightLocal, ...filteredCloud];
-      });
-    });
+    const unsubscribe = subscribeToCloudExams(
+      (cloudExams) => {
+        applyCloudExamsUpdate(cloudExams);
+      },
+      (errorMsg) => {
+        setIsLoadingExams(false);
+        setCloudLoadError(errorMsg);
+      }
+    );
     return () => unsubscribe();
-  }, [persistPendingSaveIds]);
+  }, [applyCloudExamsUpdate]);
 
   // Auto-retry unsynced offline exams when Admin comes back online
   useEffect(() => {
@@ -687,11 +689,13 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(exams));
+      if (exams.length > 0 || cloudSynced) {
+        localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(exams));
+      }
     } catch {
       // Ignore quota errors
     }
-  }, [exams]);
+  }, [exams, cloudSynced]);
 
   useEffect(() => {
     try {
@@ -1188,6 +1192,9 @@ export default function App() {
               onSyncCloud={handleSyncCloud}
               isSyncingCloud={isSyncingCloud}
               cloudSynced={cloudSynced}
+              isLoadingExams={isLoadingExams}
+              cloudLoadError={cloudLoadError}
+              onReloadFromCloud={handleReloadExamsFromCloud}
               syncFeedbackMessage={syncFeedbackMessage}
               onDismissSyncFeedback={() => showFeedback(null)}
               unsyncedExamIds={unsyncedExamIds}
