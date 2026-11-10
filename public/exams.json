@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-10T07:50:33.144Z",
+  "updatedAt": "2026-11-10T07:52:58.162Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "Sập web tạm thời",
@@ -18,7 +18,7 @@
       "isFavorite": false,
       "shuffleQuestions": false,
       "shuffleOptions": false,
-      "sourceType": "docx",
+      "sourceType": "manual",
       "fileName": "Sử 12.docx",
       "questions": [
         {
@@ -45,7 +45,7 @@
             "C": "Liên minh châu Âu.",
             "D": "Hiệp hội các quốc gia Đông Nam Á."
           },
-          "correctAnswer": "A"
+          "correctAnswer": "B"
         },
         {
           "id": "q-1794297000757-3",
