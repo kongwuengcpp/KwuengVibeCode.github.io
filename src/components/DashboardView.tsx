@@ -37,6 +37,7 @@ import {
 } from '../types/exam';
 import { compressImageDataUriIfNeeded } from '../utils/docxHelper';
 import { MAX_LOGO_CHARS, sanitizeDocId } from '../firebase';
+import { GitHubSyncConfig } from '../utils/githubSync';
 
 interface DashboardViewProps {
   exams: Exam[];
@@ -60,6 +61,10 @@ interface DashboardViewProps {
   onImportExamsJson?: (exams: Exam[], importedBranding?: Partial<SiteBranding>) => void;
   onSyncCloud?: () => Promise<void>;
   isSyncingCloud?: boolean;
+  githubConfig?: GitHubSyncConfig;
+  onUpdateGitHubConfig?: (partial: Partial<GitHubSyncConfig>) => GitHubSyncConfig;
+  onSyncGitHub?: (overrideCfg?: Partial<GitHubSyncConfig>) => Promise<boolean>;
+  isSyncingGitHub?: boolean;
   cloudSynced?: boolean;
   isLoadingExams?: boolean;
   cloudLoadError?: string | null;
@@ -116,6 +121,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onImportExamsJson,
   onSyncCloud,
   isSyncingCloud = false,
+  githubConfig,
+  onUpdateGitHubConfig,
+  onSyncGitHub,
+  isSyncingGitHub = false,
   cloudSynced = false,
   isLoadingExams = false,
   cloudLoadError = null,
@@ -170,6 +179,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [copiedExamId, setCopiedExamId] = useState<string | null>(null);
   const [showAdminHint, setShowAdminHint] = useState<boolean>(false);
   const [isEditingBranding, setIsEditingBranding] = useState<boolean>(false);
+  const [isEditingGitHubConfig, setIsEditingGitHubConfig] = useState<boolean>(false);
   const [examPendingDelete, setExamPendingDelete] = useState<Exam | null>(null);
   const [editTitle, setEditTitle] = useState<string>(branding.title);
   const [editSubtitle, setEditSubtitle] = useState<string>(branding.subtitle);
@@ -178,6 +188,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [brandingLogoError, setBrandingLogoError] = useState<string>('');
   const [retryingExamId, setRetryingExamId] = useState<string | null>(null);
   const brandingLogoInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [ghToken, setGhToken] = useState<string>(githubConfig?.token || '');
+  const [ghOwner, setGhOwner] = useState<string>(githubConfig?.owner || 'kongwuengcpp');
+  const [ghRepo, setGhRepo] = useState<string>(
+    githubConfig?.repo || 'KwuengVibeCode.github.io'
+  );
+  const [ghBranch, setGhBranch] = useState<string>(githubConfig?.branch || 'main');
+  const [ghFilePath, setGhFilePath] = useState<string>(
+    githubConfig?.filePath || 'public/exams.json'
+  );
+  const [ghAutoSync, setGhAutoSync] = useState<boolean>(
+    githubConfig?.autoSync ?? true
+  );
+
+  useEffect(() => {
+    if (!githubConfig) return;
+    setGhToken(githubConfig.token || '');
+    setGhOwner(githubConfig.owner || 'kongwuengcpp');
+    setGhRepo(githubConfig.repo || 'KwuengVibeCode.github.io');
+    setGhBranch(githubConfig.branch || 'main');
+    setGhFilePath(githubConfig.filePath || 'public/exams.json');
+    setGhAutoSync(githubConfig.autoSync ?? true);
+  }, [githubConfig]);
 
   const unsyncedSet = useMemo(() => {
     const s = new Set<string>();
@@ -197,16 +230,248 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [branding]);
 
   useEffect(() => {
-    if (!isEditingBranding && !examPendingDelete) return;
+    if (!isEditingBranding && !isEditingGitHubConfig && !examPendingDelete) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (examPendingDelete) setExamPendingDelete(null);
+        else if (isEditingGitHubConfig) setIsEditingGitHubConfig(false);
         else if (isEditingBranding) setIsEditingBranding(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isEditingBranding, examPendingDelete]);
+  }, [isEditingBranding, isEditingGitHubConfig, examPendingDelete]);
+
+  const hasGitHubToken = Boolean(githubConfig?.token?.trim());
+
+  const handleTriggerGitHubSyncClick = () => {
+    if (!hasGitHubToken) {
+      setIsEditingGitHubConfig(true);
+      return;
+    }
+    if (onSyncGitHub) {
+      void onSyncGitHub();
+    }
+  };
+
+  const renderGitHubConfigModal = () => {
+    if (!isEditingGitHubConfig || !isAdmin) return null;
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="github-config-modal-title"
+        onClick={() => setIsEditingGitHubConfig(false)}
+        className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="w-full max-w-lg bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 sm:p-7 space-y-5 text-left"
+        >
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center shrink-0">
+                <Upload className="w-5 h-5" />
+              </div>
+              <div>
+                <h3
+                  id="github-config-modal-title"
+                  className="text-base font-extrabold text-slate-900"
+                >
+                  Cấu hình tự động đồng bộ GitHub
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Đẩy thẳng đề thi vào <code className="font-mono">public/exams.json</code> trên GitHub (Miễn phí 100%, không lo hết hạn mức)
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsEditingGitHubConfig(false)}
+              aria-label="Đóng cửa sổ"
+              className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center cursor-pointer transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="rounded-2xl bg-blue-50/70 border border-blue-200/80 p-3.5 text-xs text-slate-700 space-y-1.5 leading-relaxed">
+            <div className="font-bold text-[#2563eb]">
+              Hướng dẫn lấy GitHub Token (chỉ làm 1 lần duy nhất):
+            </div>
+            <div>
+              1. Vào GitHub &rarr; <strong>Settings</strong> (ảnh đại diện góc phải) &rarr; <strong>Developer settings</strong> &rarr; <strong>Personal access tokens</strong> &rarr; <strong>Tokens (classic)</strong>.
+            </div>
+            <div>
+              2. Bấm <strong>Generate new token (classic)</strong> &rarr; Tích chọn ô <strong>repo</strong> &rarr; Bấm Generate và dán mã <code className="font-mono">ghp_...</code> vào ô bên dưới.
+            </div>
+          </div>
+
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const nextCfg: Partial<GitHubSyncConfig> = {
+                token: ghToken.trim(),
+                owner: ghOwner.trim() || 'kongwuengcpp',
+                repo: ghRepo.trim() || 'KwuengVibeCode.github.io',
+                branch: ghBranch.trim() || 'main',
+                filePath: ghFilePath.trim() || 'public/exams.json',
+                autoSync: ghAutoSync,
+              };
+              onUpdateGitHubConfig?.(nextCfg);
+              setIsEditingGitHubConfig(false);
+              if (nextCfg.token && onSyncGitHub) {
+                await onSyncGitHub(nextCfg);
+              }
+            }}
+            className="space-y-4"
+          >
+            <div>
+              <label
+                htmlFor="gh-token-input"
+                className="block text-xs font-bold text-slate-700 mb-1"
+              >
+                GitHub Personal Access Token (chỉ lưu trên trình duyệt của bạn)
+              </label>
+              <input
+                id="gh-token-input"
+                type="password"
+                value={ghToken}
+                onChange={(e) => setGhToken(e.target.value)}
+                placeholder="Dán mã ghp_... hoặc github_pat_... vào đây"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                required
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="gh-owner-input"
+                  className="block text-xs font-bold text-slate-700 mb-1"
+                >
+                  Tài khoản GitHub (Owner)
+                </label>
+                <input
+                  id="gh-owner-input"
+                  type="text"
+                  value={ghOwner}
+                  onChange={(e) => setGhOwner(e.target.value)}
+                  placeholder="kongwuengcpp"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                  required
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="gh-repo-input"
+                  className="block text-xs font-bold text-slate-700 mb-1"
+                >
+                  Tên Repository
+                </label>
+                <input
+                  id="gh-repo-input"
+                  type="text"
+                  value={ghRepo}
+                  onChange={(e) => setGhRepo(e.target.value)}
+                  placeholder="KwuengVibeCode.github.io"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="gh-branch-input"
+                  className="block text-xs font-bold text-slate-700 mb-1"
+                >
+                  Nhánh (Branch)
+                </label>
+                <input
+                  id="gh-branch-input"
+                  type="text"
+                  value={ghBranch}
+                  onChange={(e) => setGhBranch(e.target.value)}
+                  placeholder="main"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                  required
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="gh-path-input"
+                  className="block text-xs font-bold text-slate-700 mb-1"
+                >
+                  Đường dẫn file đề tĩnh
+                </label>
+                <input
+                  id="gh-path-input"
+                  type="text"
+                  value={ghFilePath}
+                  onChange={(e) => setGhFilePath(e.target.value)}
+                  placeholder="public/exams.json"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                  required
+                />
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2.5 pt-1 text-xs font-semibold text-slate-700 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={ghAutoSync}
+                onChange={(e) => setGhAutoSync(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-300 text-[#2563eb] accent-[#2563eb] cursor-pointer"
+              />
+              <span>
+                Tự động đẩy lên GitHub ngay mỗi khi Tạo mới, Sửa hoặc Xoá đề thi (1–2 giây)
+              </span>
+            </label>
+
+            <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onUpdateGitHubConfig?.({
+                    token: ghToken.trim(),
+                    owner: ghOwner.trim() || 'kongwuengcpp',
+                    repo: ghRepo.trim() || 'KwuengVibeCode.github.io',
+                    branch: ghBranch.trim() || 'main',
+                    filePath: ghFilePath.trim() || 'public/exams.json',
+                    autoSync: ghAutoSync,
+                  });
+                  setIsEditingGitHubConfig(false);
+                }}
+                className="px-3.5 py-2 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-100 text-xs font-bold transition-colors cursor-pointer"
+              >
+                Chỉ lưu cấu hình
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditingGitHubConfig(false)}
+                  className="px-3.5 py-2 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-100 text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  Đóng
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSyncingGitHub}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGitHub ? 'animate-spin' : ''}`} />
+                  <span>Lưu &amp; Đồng bộ ngay lên GitHub</span>
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
 
   // Khôi phục đúng vị trí cuộn của đề vừa làm khi nhấn Quay lại từ màn hình làm bài / chỉnh sửa
   useEffect(() => {
@@ -628,9 +893,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
 
-              {/* MỞ CÔNG CỤ TẠO ĐỀ & ĐỒNG BỘ CLOUD - Only visible to Admin */}
+              {/* MỞ CÔNG CỤ TẠO ĐỀ & ĐỒNG BỘ GITHUB - Only visible to Admin */}
               {isAdmin && (
-                <div className="mt-5 md:mt-7 w-full flex flex-col sm:flex-row md:flex-col lg:flex-row items-stretch sm:items-center gap-2">
+                <div className="mt-5 md:mt-7 w-full flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={onCreateNewExam}
@@ -640,20 +905,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span>MỞ CÔNG CỤ TẠO ĐỀ</span>
                   </button>
 
-                  {onSyncCloud && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void onSyncCloud();
-                      }}
-                      disabled={isSyncingCloud}
-                      title="Đẩy toàn bộ đề thi và giao diện hiện tại lên Cloud để mọi máy khác đều nhìn thấy"
-                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-3 md:py-2.5 rounded-xl border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-100/70 text-emerald-700 text-xs font-bold uppercase tracking-wide transition-colors cursor-pointer disabled:opacity-60"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isSyncingCloud ? 'animate-spin' : ''}`} />
-                      <span>{isSyncingCloud ? 'ĐANG ĐỒNG BỘ...' : 'ĐỒNG BỘ LÊN CLOUD'}</span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleTriggerGitHubSyncClick}
+                    disabled={isSyncingGitHub}
+                    title={
+                      hasGitHubToken
+                        ? `Đẩy thẳng ${exams.length} đề thi vào public/exams.json trên GitHub (${githubConfig?.owner}/${githubConfig?.repo})`
+                        : 'Cấu hình GitHub Token để tự động đẩy đề thi lên GitHub với 1 cú nhấp'
+                    }
+                    className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-3 md:py-2.5 rounded-xl border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-100/70 text-emerald-700 text-xs font-bold uppercase tracking-wide transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 shrink-0 ${isSyncingGitHub ? 'animate-spin' : ''}`}
+                    />
+                    <span>
+                      {isSyncingGitHub
+                        ? 'ĐANG ĐẨY GITHUB...'
+                        : hasGitHubToken
+                        ? 'ĐỒNG BỘ LÊN GITHUB'
+                        : 'CẤU HÌNH ĐỒNG BỘ GITHUB'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingGitHubConfig(true)}
+                    title="Cấu hình GitHub Token & Repository"
+                    className="inline-flex items-center justify-center gap-1 px-3 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                    <span>Token GitHub</span>
+                  </button>
                 </div>
               )}
 
@@ -883,6 +1166,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
         )}
+        {renderGitHubConfigModal()}
       </main>
     );
   }
@@ -951,22 +1235,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             {isAdmin && (
               <>
-                {onSyncCloud && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void onSyncCloud();
-                    }}
-                    disabled={isSyncingCloud}
-                    title="Đồng bộ toàn bộ đề thi và giao diện lên Cloud để mọi thiết bị đều thấy"
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
-                    <span className="hidden sm:inline">
-                      {isSyncingCloud ? 'Đang đồng bộ...' : cloudSynced ? 'Đã đồng bộ Cloud' : 'Đồng bộ Cloud'}
-                    </span>
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={handleTriggerGitHubSyncClick}
+                  disabled={isSyncingGitHub || isSyncingCloud}
+                  title={
+                    hasGitHubToken
+                      ? `Đẩy thẳng toàn bộ đề thi vào public/exams.json trên GitHub (${githubConfig?.owner}/${githubConfig?.repo}) chỉ trong 1–2 giây`
+                      : 'Nhấn để cấu hình GitHub Token và tự động đồng bộ đề thi lên GitHub'
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60"
+                >
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 ${
+                      isSyncingGitHub || isSyncingCloud ? 'animate-spin' : ''
+                    }`}
+                  />
+                  <span className="hidden sm:inline">
+                    {isSyncingGitHub
+                      ? 'Đang đẩy GitHub...'
+                      : hasGitHubToken
+                      ? 'Đồng bộ GitHub'
+                      : 'Cấu hình GitHub'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsEditingGitHubConfig(true)}
+                  title="Cấu hình GitHub Token & tự động đồng bộ"
+                  className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Settings className="w-3.5 h-3.5 text-slate-600" />
+                  <span className="hidden xl:inline">Token</span>
+                </button>
 
                 {onExportExamsJson && (
                   <button
@@ -1985,6 +2287,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       )}
+      {renderGitHubConfigModal()}
     </div>
   );
 };

@@ -34,7 +34,13 @@ import {
   isOfflineErrorMessage,
   deriveExamCode,
 } from './firebase';
-import { fetchStaticExams } from './utils/staticExams';
+import { fetchStaticExams, fetchStaticExamsBundle } from './utils/staticExams';
+import {
+  GitHubSyncConfig,
+  loadGitHubSyncConfig,
+  saveGitHubSyncConfig,
+  pushExamsToGitHub,
+} from './utils/githubSync';
 
 const CreateExamView = lazy(() =>
   import('./components/CreateExamView').then((m) => ({
@@ -137,6 +143,8 @@ declare global {
     setAdminKey?: (newKey: string) => string;
     setBranding?: (branding: Partial<SiteBranding>) => string;
     syncCloud?: () => Promise<string>;
+    setGithubToken?: (token: string, repoFull?: string) => string;
+    syncGithub?: () => Promise<string>;
     ADMIN_KEY?: string;
   }
 }
@@ -286,6 +294,12 @@ export default function App() {
   const [editingExam, setEditingExam] = useState<Exam | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
+  const [isSyncingGitHub, setIsSyncingGitHub] = useState<boolean>(false);
+  const [githubConfig, setGithubConfig] = useState<GitHubSyncConfig>(() =>
+    loadGitHubSyncConfig()
+  );
+  const githubConfigRef = useRef<GitHubSyncConfig>(githubConfig);
+  githubConfigRef.current = githubConfig;
   const [cloudSynced, setCloudSynced] = useState<boolean>(false);
   const [isLoadingExams, setIsLoadingExams] = useState<boolean>(true);
   const [cloudLoadError, setCloudLoadError] = useState<string | null>(null);
@@ -422,6 +436,57 @@ export default function App() {
     }
   }, [applyCloudExamsUpdate, showFeedback, staticMode]);
 
+  const handleUpdateGitHubConfig = useCallback(
+    (partial: Partial<GitHubSyncConfig>): GitHubSyncConfig => {
+      const updated = saveGitHubSyncConfig(partial);
+      setGithubConfig(updated);
+      githubConfigRef.current = updated;
+      return updated;
+    },
+    []
+  );
+
+  const handleSyncGitHub = useCallback(
+    async (
+      customExams?: Exam[],
+      customBranding?: SiteBranding,
+      overrideCfg?: Partial<GitHubSyncConfig>,
+      commitMsg?: string
+    ): Promise<boolean> => {
+      const listToPush = customExams ?? examsRef.current;
+      const brandingToPush = customBranding ?? brandingRef.current;
+      const cfg = overrideCfg
+        ? handleUpdateGitHubConfig(overrideCfg)
+        : githubConfigRef.current;
+
+      setIsSyncingGitHub(true);
+      try {
+        const res = await pushExamsToGitHub(
+          listToPush,
+          brandingToPush,
+          cfg,
+          commitMsg
+        );
+        if (res.ok) {
+          setCloudSynced(true);
+          setCloudLoadError(null);
+          showFeedback(
+            `✅ Đã đồng bộ ${res.count ?? listToPush.length} đề thi lên GitHub (${cfg.owner}/${cfg.repo}) thành công! Học sinh tải lại trang sẽ thấy ngay.`,
+            5000
+          );
+          return true;
+        }
+        showFeedback(
+          `❌ Đồng bộ GitHub thất bại: ${res.error || 'Vui lòng kiểm tra lại Token.'}`
+        );
+        return false;
+      } finally {
+        setIsSyncingGitHub(false);
+      }
+    },
+    [handleUpdateGitHubConfig, showFeedback]
+  );
+
   const handleUpdateBranding = useCallback(
     async (newBranding: Partial<SiteBranding>) => {
       const updated: SiteBranding = { ...brandingRef.current, ...newBranding };
@@ -430,6 +495,16 @@ export default function App() {
         localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(updated));
       } catch {
         // ignore
+      }
+      if (githubConfigRef.current.token && githubConfigRef.current.autoSync) {
+        const ghOk = await handleSyncGitHub(
+          examsRef.current,
+          updated,
+          undefined,
+          `Cập nhật thông tin trang (${updated.title})`
+        );
+        void saveSiteBrandingToCloud(updated);
+        if (ghOk) return;
       }
       const res = await saveSiteBrandingToCloud(updated);
       if (res.ok) {
@@ -440,12 +515,27 @@ export default function App() {
         );
       }
     },
-    [showFeedback]
+    [handleSyncGitHub, showFeedback]
   );
 
   const handleRetrySyncExam = useCallback(
     async (exam: Exam) => {
       const canonicalId = sanitizeDocId(exam.id);
+      if (githubConfigRef.current.token) {
+        const ghOk = await handleSyncGitHub(
+          examsRef.current,
+          brandingRef.current,
+          undefined,
+          `Đồng bộ lại đề: ${exam.title}`
+        );
+        if (ghOk) {
+          pendingSaveExamIdsRef.current.delete(exam.id);
+          pendingSaveExamIdsRef.current.delete(canonicalId);
+          persistPendingSaveIds();
+          void saveExamToCloud({ ...exam, id: canonicalId });
+          return;
+        }
+      }
       const res = await saveExamToCloud({ ...exam, id: canonicalId });
       if (res.ok) {
         pendingSaveExamIdsRef.current.delete(exam.id);
@@ -459,13 +549,29 @@ export default function App() {
         );
       }
     },
-    [persistPendingSaveIds, showFeedback]
+    [handleSyncGitHub, persistPendingSaveIds, showFeedback]
   );
 
   const handleSyncCloud = useCallback(async () => {
     setIsSyncingCloud(true);
     showFeedback(null);
     try {
+      // Nếu Admin đã cấu hình GitHub Token, ưu tiên đẩy thẳng lên GitHub để học sinh thấy ngay
+      if (githubConfigRef.current.token) {
+        const ghOk = await handleSyncGitHub(
+          examsRef.current,
+          brandingRef.current,
+          undefined,
+          `Đồng bộ toàn bộ ${examsRef.current.length} đề thi lên GitHub`
+        );
+        if (ghOk) {
+          pendingSaveExamIdsRef.current.clear();
+          persistPendingSaveIds();
+          void syncAllToCloud(examsRef.current, brandingRef.current);
+          return;
+        }
+      }
+
       const res = await syncAllToCloud(examsRef.current, brandingRef.current);
       if (res.success) {
         pendingSaveExamIdsRef.current.clear();
@@ -495,10 +601,11 @@ export default function App() {
     } finally {
       setIsSyncingCloud(false);
     }
-  }, [persistPendingSaveIds, showFeedback]);
+  }, [handleSyncGitHub, persistPendingSaveIds, showFeedback]);
 
-  // Real-time Firestore listener for Site Branding (/settings/site_config)
+  // Real-time Firestore listener for Site Branding (/settings/site_config): chỉ chạy khi dùng Firestore
   useEffect(() => {
+    if (staticMode !== false) return;
     const unsubscribe = subscribeToSiteBranding((cloudBranding) => {
       if (cloudBranding) {
         setBranding(cloudBranding);
@@ -522,7 +629,7 @@ export default function App() {
       }
     });
     return () => unsubscribe();
-  }, []);
+  }, [staticMode]);
 
   // Khách/học sinh: đọc exams.json (không tốn hạn mức Firestore). Nếu file rỗng/thiếu thì dùng Firestore.
   useEffect(() => {
@@ -531,14 +638,17 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    void fetchStaticExams().then((list) => {
+    void fetchStaticExamsBundle().then((bundle) => {
       if (cancelled) return;
-      if (list.length > 0) {
+      if (bundle.exams.length > 0) {
         setExams(
-          list
+          bundle.exams
             .filter((e) => !IGNORED_EXAM_IDS.has(e.id))
             .map((e) => ({ ...e, examCode: deriveExamCode(e.id, e.examCode) }))
         );
+        if (bundle.branding) {
+          setBranding((prev) => ({ ...prev, ...bundle.branding }));
+        }
         setIsLoadingExams(false);
         setCloudLoadError(null);
         setCloudSynced(true);
@@ -562,11 +672,18 @@ export default function App() {
       (errorMsg) => {
         setIsLoadingExams(false);
         setCloudLoadError(errorMsg);
-        // Cloud lỗi (vd. hết hạn mức) mà máy chưa có đề nào: dùng exams.json làm dự phòng chỉ-đọc
+        // Cloud lỗi (vd. hết hạn mức) mà máy chưa có đề nào: dùng exams.json làm dự phòng
         if (examsRef.current.length === 0) {
-          void fetchStaticExams().then((list) => {
-            if (list.length > 0 && examsRef.current.length === 0) {
-              setExams(list.map((e) => ({ ...e, examCode: deriveExamCode(e.id, e.examCode) })));
+          void fetchStaticExamsBundle().then((bundle) => {
+            if (bundle.exams.length > 0 && examsRef.current.length === 0) {
+              setExams(
+                bundle.exams.map((e) => ({ ...e, examCode: deriveExamCode(e.id, e.examCode) }))
+              );
+              if (bundle.branding) {
+                setBranding((prev) => ({ ...prev, ...bundle.branding }));
+              }
+              setCloudLoadError(null);
+              setCloudSynced(true);
             }
           });
         }
@@ -723,7 +840,33 @@ export default function App() {
 
     window.syncCloud = async () => {
       await handleSyncCloud();
-      return '✅ Đã thực hiện đồng bộ đề thi và giao diện với Cloud!';
+      return '✅ Đã thực hiện đồng bộ đề thi và giao diện!';
+    };
+
+    window.setGithubToken = (token: string, repoFull?: string) => {
+      if (!isAdmin) {
+        return '❌ Bạn cần đăng nhập Admin trước khi cấu hình GitHub Token.';
+      }
+      const partial: Partial<GitHubSyncConfig> = { token: String(token || '').trim() };
+      if (repoFull && repoFull.includes('/')) {
+        const [owner, repo] = repoFull.split('/');
+        if (owner && repo) {
+          partial.owner = owner.trim();
+          partial.repo = repo.trim();
+        }
+      }
+      const cfg = handleUpdateGitHubConfig(partial);
+      return `✅ Đã lưu GitHub Token cho kho ${cfg.owner}/${cfg.repo} (nhánh ${cfg.branch})! Gõ syncGithub() hoặc bấm nút "Đồng bộ GitHub" để đẩy đề.`;
+    };
+
+    window.syncGithub = async () => {
+      if (!isAdmin) {
+        return '❌ Bạn cần đăng nhập Admin trước khi đồng bộ GitHub.';
+      }
+      const ok = await handleSyncGitHub();
+      return ok
+        ? '✅ Đã đẩy tự động exams.json lên GitHub thành công!'
+        : '❌ Đồng bộ GitHub thất bại, hãy kiểm tra thông báo trên màn hình.';
     };
 
     try {
@@ -741,11 +884,17 @@ export default function App() {
     }
 
     console.info(
-      `%c[Luyện đề Online - Console Admin Auth]\n%cĐể mở khoá quyền Admin tạo đề, gõ lệnh sau vào Console:\n  admin("${DEFAULT_ADMIN_KEY}")\nHoặc đăng xuất bằng: logoutAdmin()`,
+      `%c[Luyện đề Online - Console Admin Auth]\n%cĐể mở khoá quyền Admin tạo đề, gõ lệnh sau vào Console:\n  admin("${DEFAULT_ADMIN_KEY}")\nCấu hình GitHub Token nhanh: setGithubToken("ghp_...") · Đồng bộ: syncGithub()\nHoặc đăng xuất bằng: logoutAdmin()`,
       'color: #22c55e; font-weight: bold; font-size: 13px;',
       'color: #94a3b8; font-size: 12px;'
     );
-  }, [isAdmin, handleUpdateBranding, handleSyncCloud]);
+  }, [
+    isAdmin,
+    handleUpdateBranding,
+    handleSyncCloud,
+    handleUpdateGitHubConfig,
+    handleSyncGitHub,
+  ]);
 
   useEffect(() => {
     try {
@@ -932,14 +1081,37 @@ export default function App() {
       return { ok: true };
     }
 
+    const nextExamsList = (() => {
+      const prev = examsRef.current;
+      const exists = prev.some((e) => sanitizeDocId(e.id) === canonicalId);
+      return exists
+        ? prev.map((e) => (sanitizeDocId(e.id) === canonicalId ? normalizedExam : e))
+        : [normalizedExam, ...prev];
+    })();
+
+    // Nếu Admin đã cấu hình GitHub Token và bật tự động đồng bộ, đẩy thẳng lên GitHub (1-2s)
+    const hasGitHubAuto =
+      Boolean(githubConfigRef.current.token?.trim()) &&
+      githubConfigRef.current.autoSync;
+
+    let githubSyncedOk = false;
+    if (hasGitHubAuto) {
+      githubSyncedOk = await handleSyncGitHub(
+        nextExamsList,
+        brandingRef.current,
+        undefined,
+        `Lưu đề thi: ${normalizedExam.title}`
+      );
+    }
+
     const res = await saveExamToCloud(normalizedExam);
-    if (!res.ok) {
+    if (!res.ok && !githubSyncedOk) {
       const errMsg = res.error || 'Không thể lưu đề thi lên Cloud.';
       showFeedback(`❌ Không lưu được đề "${normalizedExam.title}" lên Cloud: ${errMsg}`);
       return {
         ok: false,
         error: errMsg,
-        offlineAvailable: isOfflineErrorMessage(errMsg),
+        offlineAvailable: isOfflineErrorMessage(errMsg) || errMsg.includes('hạn mức'),
       };
     }
 
@@ -952,21 +1124,22 @@ export default function App() {
     persistPendingSaveIds();
     setCloudSynced(true);
 
-    setExams((prev) => {
-      const exists = prev.some((e) => sanitizeDocId(e.id) === canonicalId);
-      const next = exists
-        ? prev.map((e) => (sanitizeDocId(e.id) === canonicalId ? normalizedExam : e))
-        : [normalizedExam, ...prev];
-      try {
-        localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // ignore
-      }
-      return next;
-    });
+    setExams(nextExamsList);
+    try {
+      localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(nextExamsList));
+    } catch {
+      // ignore
+    }
 
     setEditingExam(null);
-    showFeedback(`✅ Đã lưu đề thi "${normalizedExam.title}" lên Cloud thành công!`, 4500);
+    if (githubSyncedOk) {
+      showFeedback(
+        `✅ Đã lưu đề "${normalizedExam.title}" và tự động cập nhật lên GitHub (${nextExamsList.length} đề)!`,
+        5000
+      );
+    } else {
+      showFeedback(`✅ Đã lưu đề thi "${normalizedExam.title}" lên Cloud thành công!`, 4500);
+    }
 
     const base = getBasePathname();
     if (startImmediately) {
@@ -992,7 +1165,7 @@ export default function App() {
 
     if (isAdmin) {
       const res = await saveExamToCloud(updated);
-      if (!res.ok) {
+      if (!res.ok && !githubConfigRef.current.token) {
         setExams((prev) => prev.map((e) => (e.id === examId ? target : e)));
         showFeedback(
           `❌ Không thể cập nhật trạng thái yêu thích lên Cloud: ${res.error || 'Lỗi mạng'}`
@@ -1005,6 +1178,9 @@ export default function App() {
     if (!isAdmin) return;
     const safeTarget = sanitizeDocId(examId);
     const previousExams = examsRef.current;
+    const remainingExams = previousExams.filter(
+      (e) => e.id !== examId && sanitizeDocId(e.id) !== safeTarget
+    );
 
     deletedExamIdsRef.current.add(examId);
     deletedExamIdsRef.current.add(safeTarget);
@@ -1021,21 +1197,31 @@ export default function App() {
       lastSavedExamRef.current = null;
     }
 
-    setExams((prev) => {
-      const remaining = prev.filter(
-        (e) => e.id !== examId && sanitizeDocId(e.id) !== safeTarget
+    setExams(remainingExams);
+    try {
+      localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(remainingExams));
+    } catch {
+      // ignore
+    }
+
+    let githubDeletedOk = false;
+    if (githubConfigRef.current.token?.trim() && githubConfigRef.current.autoSync) {
+      githubDeletedOk = await handleSyncGitHub(
+        remainingExams,
+        brandingRef.current,
+        undefined,
+        `Xoá đề thi (${examId})`
       );
-      try {
-        localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(remaining));
-      } catch {
-        // ignore
-      }
-      return remaining;
-    });
+    }
 
     const res = await deleteExamFromCloud(examId);
-    if (res.ok) {
-      showFeedback('🗑️ Đã xoá vĩnh viễn đề thi khỏi thư viện và Cloud!', 4000);
+    if (res.ok || githubDeletedOk) {
+      showFeedback(
+        githubDeletedOk
+          ? '🗑️ Đã xoá đề thi và tự động cập nhật lên GitHub!'
+          : '🗑️ Đã xoá vĩnh viễn đề thi khỏi thư viện và Cloud!',
+        4000
+      );
     } else {
       deletedExamIdsRef.current.delete(examId);
       deletedExamIdsRef.current.delete(safeTarget);
@@ -1054,6 +1240,7 @@ export default function App() {
 
   const handleExportExamsJson = () => {
     const exportPayload = {
+      updatedAt: new Date().toISOString(),
       branding,
       exams,
     };
@@ -1131,6 +1318,19 @@ export default function App() {
       localStorage.setItem(EXAMS_STORAGE_KEY, JSON.stringify(merged));
     } catch {
       // ignore
+    }
+
+    if (githubConfigRef.current.token?.trim()) {
+      const ghOk = await handleSyncGitHub(
+        merged,
+        nextBranding,
+        undefined,
+        `Nhập ${validImported.length} đề thi từ file JSON`
+      );
+      if (ghOk) {
+        void syncAllToCloud(merged, nextBranding);
+        return;
+      }
     }
 
     setIsSyncingCloud(true);
@@ -1251,6 +1451,12 @@ export default function App() {
               onImportExamsJson={(list, b) => void handleImportExamsJson(list, b)}
               onSyncCloud={handleSyncCloud}
               isSyncingCloud={isSyncingCloud}
+              githubConfig={githubConfig}
+              onUpdateGitHubConfig={handleUpdateGitHubConfig}
+              onSyncGitHub={(overrideCfg) =>
+                handleSyncGitHub(undefined, undefined, overrideCfg)
+              }
+              isSyncingGitHub={isSyncingGitHub}
               cloudSynced={cloudSynced}
               isLoadingExams={isLoadingExams}
               cloudLoadError={cloudLoadError}
