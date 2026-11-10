@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-10T13:12:01.299Z",
+  "updatedAt": "2026-11-10T13:13:36.181Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "Tối ưu lưu lượng truy cập , thoải mái làm đề không lo sập",
@@ -11579,10 +11579,6 @@
       "durationMinutes": 90,
       "createdAt": "07/11/2026",
       "uploadTime": "06:00",
-      "isFavorite": false,
-      "shuffleQuestions": false,
-      "shuffleOptions": false,
-      "sourceType": "manual",
       "questions": [
         {
           "id": "q-1794025110688-1",
@@ -12241,7 +12237,10 @@
             "D"
           ]
         }
-      ]
+      ],
+      "shuffleQuestions": false,
+      "shuffleOptions": false,
+      "isFavorite": false
     }
   ]
 }
