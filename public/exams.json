@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-10T11:10:04.625Z",
+  "updatedAt": "2026-11-10T13:12:01.299Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "Tối ưu lưu lượng truy cập , thoải mái làm đề không lo sập",
@@ -11579,6 +11579,10 @@
       "durationMinutes": 90,
       "createdAt": "07/11/2026",
       "uploadTime": "06:00",
+      "isFavorite": false,
+      "shuffleQuestions": false,
+      "shuffleOptions": false,
+      "sourceType": "manual",
       "questions": [
         {
           "id": "q-1794025110688-1",
@@ -11721,7 +11725,7 @@
             "C": "Nguy cơ của cách mạng màu và cuộc chiến tranh hạt nhân toàn cầu.",
             "D": "Diễn biến phức tạp của tình hình Biển Đông và tình hình quốc tế."
           },
-          "correctAnswer": "C"
+          "correctAnswer": "D"
         },
         {
           "id": "q-1794025110688-12",
@@ -12237,10 +12241,7 @@
             "D"
           ]
         }
-      ],
-      "shuffleQuestions": false,
-      "shuffleOptions": false,
-      "isFavorite": false
+      ]
     }
   ]
 }
