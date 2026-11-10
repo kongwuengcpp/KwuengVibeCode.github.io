@@ -85,6 +85,10 @@ export const utf8Bytes = (s: string): number => new TextEncoder().encode(s).leng
 export function describeFirestoreError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   const m = msg.toLowerCase();
+  const code = String((err as { code?: unknown } | null)?.code ?? '').toLowerCase();
+  if (code.includes('resource-exhausted') || m.includes('quota') || m.includes('resource_exhausted')) {
+    return 'Database Firestore (gói miễn phí) đã hết hạn mức ĐỌC trong ngày và không thể vượt hạn mức dù bật thanh toán. Hạn mức tự đặt lại mỗi ngày (khoảng 15:00 giờ Việt Nam).';
+  }
   if (m.includes('exceeds the maximum allowed size') || m.includes('too large')) {
     return 'Đề quá nặng so với giới hạn 1 MB của Firestore. Hãy giảm số ảnh hoặc dùng ảnh nhỏ hơn.';
   }
@@ -154,7 +158,7 @@ async function testConnection() {
   }
 }
 
-void testConnection();
+if (import.meta.env?.DEV) void testConnection();
 
 export const IGNORED_EXAM_IDS = new Set(['catalog_index', 'exam-test-123']);
 
@@ -552,25 +556,24 @@ export function subscribeToCloudExams(
 ): () => void {
   const path = 'exams';
   let cancelled = false;
+  let gotServerData = false;
+
+  // Nếu 12 giây vẫn chưa có dữ liệu từ máy chủ (mạng chậm/bị chặn): báo cho giao diện
+  const timer = setTimeout(() => {
+    if (!cancelled && !gotServerData) {
+      onError?.('Chưa kết nối được máy chủ Cloud (mạng chậm hoặc bị chặn).');
+    }
+  }, 12000);
 
   const unsubscribe = onSnapshot(
     collection(db, 'exams'),
     (snapshot: QuerySnapshot<DocumentData>) => {
       if (cancelled) return;
-      // Avoid wiping out local state with an empty offline-cache snapshot before server responds
-      if (snapshot.empty && snapshot.metadata.fromCache) {
-        void fetchExamsFromCloudOnce().then((res) => {
-          if (cancelled) return;
-          if (res.ok) {
-            onUpdate(res.exams);
-          } else if (res.error) {
-            onError?.(res.error);
-          }
-        });
-        return;
-      }
-      const list = parseExamsSnapshot(snapshot);
-      onUpdate(list);
+      // Snapshot rỗng lấy từ bộ nhớ đệm = CHƯA có phản hồi máy chủ. Không ghi đè danh sách đề đang có
+      // và KHÔNG gọi thêm getDocs: mỗi lần getDocs tốn thêm đúng bằng số đề trên Cloud.
+      if (snapshot.empty && snapshot.metadata.fromCache) return;
+      if (!snapshot.metadata.fromCache) gotServerData = true;
+      onUpdate(parseExamsSnapshot(snapshot));
     },
     (error: FirestoreError) => {
       try {
@@ -578,19 +581,15 @@ export function subscribeToCloudExams(
       } catch {
         // Logged via handleFirestoreError
       }
-      void fetchExamsFromCloudOnce().then((res) => {
-        if (cancelled) return;
-        if (res.ok) {
-          onUpdate(res.exams);
-        } else {
-          onError?.(res.error || describeFirestoreError(error));
-        }
-      });
+      if (cancelled) return;
+      gotServerData = true; // đã có kết quả (lỗi): không cần báo timeout nữa
+      onError?.(describeFirestoreError(error));
     }
   );
 
   return () => {
     cancelled = true;
+    clearTimeout(timer);
     unsubscribe();
   };
 }

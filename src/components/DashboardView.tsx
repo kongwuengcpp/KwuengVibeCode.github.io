@@ -972,7 +972,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <button
                     type="button"
                     onClick={onExportExamsJson}
-                    title="Xuất file exams.json (gồm cả đề thi và giao diện) để sao lưu hoặc đẩy lên GitHub"
+                    title="Xuất exams.json rồi đưa lên GitHub (public/exams.json). Học sinh đọc đề từ file này nên mỗi lần thêm/sửa/xóa đề hãy xuất lại. Cũng dùng để sao lưu."
                     className="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
                   >
                     <Download className="w-3.5 h-3.5 text-[#2563eb]" />

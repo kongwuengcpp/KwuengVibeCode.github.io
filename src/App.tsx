@@ -32,7 +32,9 @@ import {
   IGNORED_EXAM_IDS,
   sanitizeDocId,
   isOfflineErrorMessage,
+  deriveExamCode,
 } from './firebase';
+import { fetchStaticExams } from './utils/staticExams';
 
 const CreateExamView = lazy(() =>
   import('./components/CreateExamView').then((m) => ({
@@ -110,6 +112,11 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 }
 
+/**
+ * true: khách/học sinh đọc đề từ exams.json (miễn phí, không tốn lượt đọc Firestore).
+ * Admin vẫn dùng Firestore thời gian thực. Đặt false để mọi người đọc Firestore như cũ.
+ */
+const STATIC_FIRST_FOR_VISITORS = true;
 const EXAMS_STORAGE_KEY = 'luyende_online_exams_prod_v1';
 const PENDING_SAVE_STORAGE_KEY = 'luyende_pending_save_ids_v1';
 const ATTEMPTS_STORAGE_KEY = 'luyende_online_attempts_prod_v1';
@@ -282,6 +289,10 @@ export default function App() {
   const [cloudSynced, setCloudSynced] = useState<boolean>(false);
   const [isLoadingExams, setIsLoadingExams] = useState<boolean>(true);
   const [cloudLoadError, setCloudLoadError] = useState<string | null>(null);
+  // null = đang xác định, true = đọc exams.json (khách), false = đọc Firestore
+  const [staticMode, setStaticMode] = useState<boolean | null>(
+    STATIC_FIRST_FOR_VISITORS && !isAdmin ? null : false
+  );
   const [syncFeedbackMessage, setSyncFeedbackMessage] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     try {
@@ -383,6 +394,18 @@ export default function App() {
   const handleReloadExamsFromCloud = useCallback(async () => {
     setIsLoadingExams(true);
     setCloudLoadError(null);
+    if (staticMode === true) {
+      // Chế độ khách: tải lại từ exams.json, không đụng tới Firestore
+      const list = await fetchStaticExams();
+      setIsLoadingExams(false);
+      if (list.length > 0) {
+        setExams(list.map((e) => ({ ...e, examCode: deriveExamCode(e.id, e.examCode) })));
+        showFeedback(`✅ Đã tải lại danh sách đề (${list.length} đề thi).`, 3500);
+      } else {
+        setCloudLoadError('Không tải được danh sách đề. Vui lòng thử lại sau.');
+      }
+      return;
+    }
     deletedExamIdsRef.current = new Set<string>(IGNORED_EXAM_IDS);
     const res = await fetchExamsFromCloudOnce();
     if (res.ok) {
@@ -397,7 +420,7 @@ export default function App() {
       setCloudLoadError(errMsg);
       showFeedback(`❌ Tải lại danh sách đề thất bại: ${errMsg}`);
     }
-  }, [applyCloudExamsUpdate, showFeedback]);
+  }, [applyCloudExamsUpdate, showFeedback, staticMode]);
 
   const handleUpdateBranding = useCallback(
     async (newBranding: Partial<SiteBranding>) => {
@@ -501,8 +524,37 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Real-time Firestore listener for Shared Exams (/exams)
+  // Khách/học sinh: đọc exams.json (không tốn hạn mức Firestore). Nếu file rỗng/thiếu thì dùng Firestore.
   useEffect(() => {
+    if (isAdmin || !STATIC_FIRST_FOR_VISITORS) {
+      setStaticMode(false);
+      return;
+    }
+    let cancelled = false;
+    void fetchStaticExams().then((list) => {
+      if (cancelled) return;
+      if (list.length > 0) {
+        setExams(
+          list
+            .filter((e) => !IGNORED_EXAM_IDS.has(e.id))
+            .map((e) => ({ ...e, examCode: deriveExamCode(e.id, e.examCode) }))
+        );
+        setIsLoadingExams(false);
+        setCloudLoadError(null);
+        setCloudSynced(true);
+        setStaticMode(true);
+      } else {
+        setStaticMode(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin]);
+
+  // Real-time Firestore listener for Shared Exams (/exams): chỉ Admin (hoặc khi không có exams.json)
+  useEffect(() => {
+    if (staticMode !== false) return;
     const unsubscribe = subscribeToCloudExams(
       (cloudExams) => {
         applyCloudExamsUpdate(cloudExams);
@@ -510,10 +562,18 @@ export default function App() {
       (errorMsg) => {
         setIsLoadingExams(false);
         setCloudLoadError(errorMsg);
+        // Cloud lỗi (vd. hết hạn mức) mà máy chưa có đề nào: dùng exams.json làm dự phòng chỉ-đọc
+        if (examsRef.current.length === 0) {
+          void fetchStaticExams().then((list) => {
+            if (list.length > 0 && examsRef.current.length === 0) {
+              setExams(list.map((e) => ({ ...e, examCode: deriveExamCode(e.id, e.examCode) })));
+            }
+          });
+        }
       }
     );
     return () => unsubscribe();
-  }, [applyCloudExamsUpdate]);
+  }, [applyCloudExamsUpdate, staticMode]);
 
   // Auto-retry unsynced offline exams when Admin comes back online
   useEffect(() => {
