@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-11T06:32:44.683Z",
+  "updatedAt": "2026-11-11T06:33:07.695Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "Toán thì bịp , sử thì toàn ra ngoài O_o",
@@ -3023,9 +3023,13 @@
       "examCode": "27545",
       "title": "Tin 12  Bai 3-4",
       "category": "Tin học",
-      "durationMinutes": 60,
+      "durationMinutes": 90,
       "createdAt": "07/11/2026",
       "uploadTime": "20:40",
+      "isFavorite": false,
+      "shuffleQuestions": false,
+      "shuffleOptions": false,
+      "sourceType": "manual",
       "questions": [
         {
           "id": "q-1794058817024-1",
@@ -4983,10 +4987,7 @@
           ],
           "explanation": "A đúng vì các máy tính trong mạng LAN nội bộ vẫn cần địa chỉ IP nội bộ để giao tiếp với máy chủ thi; B sai vì hệ thống 1000 máy tính trong phòng thi vẫn phải kết nối thông qua các thiết bị Switch và cáp mạng; C đúng vì mạng tách biệt vật lý với Internet nên chuyên gia bên ngoài không thể điều khiển từ xa qua Internet; D sai vì biện pháp cô lập vật lý vẫn có thể bị rò rỉ dữ liệu nếu có hành vi sao chép trái phép trực tiếp qua USB tại chỗ."
         }
-      ],
-      "shuffleQuestions": false,
-      "shuffleOptions": false,
-      "isFavorite": false
+      ]
     },
     {
       "id": "exam-1794058601071",
