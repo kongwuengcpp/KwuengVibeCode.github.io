@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-11T06:33:07.695Z",
+  "updatedAt": "2026-11-11T06:33:33.177Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "Toán thì bịp , sử thì toàn ra ngoài O_o",
@@ -1331,9 +1331,13 @@
       "examCode": "79403",
       "title": "Tin 12  Bai 5-6",
       "category": "Tin học",
-      "durationMinutes": 45,
+      "durationMinutes": 90,
       "createdAt": "07/11/2026",
       "uploadTime": "20:49",
+      "isFavorite": false,
+      "shuffleQuestions": false,
+      "shuffleOptions": false,
+      "sourceType": "manual",
       "questions": [
         {
           "id": "q-1794059346784-1",
@@ -3013,10 +3017,7 @@
           ],
           "explanation": "A đúng vì yêu cầu gỡ bỏ hình ảnh cá nhân nhạy cảm liên quan đến quyền riêng tư và danh dự của cá nhân; B sai vì việc đăng tải và giữ hình ảnh cá nhân của người khác khi họ không đồng ý là xâm phạm quyền hình ảnh; C đúng vì đem ảnh cá nhân ra chế giễu tập thể trên mạng là hành vi bạo lực mạng; D đúng vì Q có thể nhờ thầy cô, gia đình hỗ trợ và sử dụng công cụ báo cáo vi phạm của nền tảng."
         }
-      ],
-      "shuffleQuestions": false,
-      "shuffleOptions": false,
-      "isFavorite": false
+      ]
     },
     {
       "id": "exam-1794058847545",
