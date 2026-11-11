@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-11T04:01:22.782Z",
+  "updatedAt": "2026-11-11T05:40:29.271Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "Toán thì bịp , sử thì toàn ra ngoài O_o",
@@ -4996,6 +4996,10 @@
       "durationMinutes": 45,
       "createdAt": "07/11/2026",
       "uploadTime": "20:36",
+      "isFavorite": false,
+      "shuffleQuestions": false,
+      "shuffleOptions": false,
+      "sourceType": "manual",
       "questions": [
         {
           "id": "q-1794058577625-1",
@@ -5190,7 +5194,7 @@
             "C": "Kinh tế tuần hoàn nông thôn.",
             "D": "Nông nghiệp truyền thống."
           },
-          "correctAnswer": "D",
+          "correctAnswer": "A",
           "explanation": "Việc tích hợp AI, cảm biến và dữ liệu lớn vào sản xuất nông nghiệp (dự báo sâu bệnh, tự động tưới tiêu) được gọi là nông nghiệp thông minh."
         },
         {
@@ -6074,10 +6078,7 @@
           ],
           "explanation": "A đúng vì tạo tranh mới từ câu lệnh mô tả là ứng dụng của AI tạo sinh; B sai vì AI tạo ảnh bằng thuật toán và dữ liệu huấn luyện chứ không có tâm hồn hay cảm xúc nghệ sĩ; C đúng vì mô hình đã học quy luật màu sắc, bố cục và phong cách từ hàng triệu bức tranh trong dữ liệu huấn luyện; D đúng vì nộp sản phẩm do AI tạo ra vào cuộc thi vẽ truyền thống mà không khai báo là vi phạm đạo đức và tính trung thực tác giả."
         }
-      ],
-      "shuffleQuestions": false,
-      "shuffleOptions": false,
-      "isFavorite": false
+      ]
     },
     {
       "id": "exam-1794058009099",
