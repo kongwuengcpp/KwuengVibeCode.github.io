@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-12T16:28:38.995Z",
+  "updatedAt": "2026-11-12T16:39:04.186Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "-Mục tri ân người đóng góp :\n+ Đỗ Văn Long 12B3 (Địa , Sử, KTPL , Tin)\n+ Nguyễn Thị Tuyền 12B1 (Sinh)\n+ Đỗ Nguyễn Thanh Hải 12B2 (Sinh)\n+ Nguyễn Nhật Bổn 12B2 (Sinh)\n+ Đỗ Hữu Đông 12B2 (Sử)\n+  Hồ Quỳnh Như 12B2 (Sử)\n+ Lê Thị Quỳnh Nhi 12B2 (Sử)\n+ Nguyễn Đỗ Tường Vy 12B2 (Sử) \n+ Nguyễn Nguyễn Khánh Băng 12B2 (Sử)\nHẹn Gặp Lại Vào Cuối Kì",
@@ -11450,10 +11450,10 @@
             "C": "Nếu không có thể truyền plasmid thì tế bào nhận không có khả năng phân chia và nhân lên.",
             "D": "Nhờ có thể truyền plasmid mà gen cần chuyển [được gắn vào DNA vùng nhân của tế bào nhận]."
           },
-          "correctAnswer": "A",
+          "correctAnswer": "B",
           "correctAnswers": [
-            "A",
-            "B"
+            "B",
+            "D"
           ]
         },
         {
