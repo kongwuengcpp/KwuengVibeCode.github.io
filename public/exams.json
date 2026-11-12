@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-12T04:31:22.053Z",
+  "updatedAt": "2026-11-12T08:21:29.675Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "Tàm tạm",
@@ -10605,6 +10605,10 @@
       "durationMinutes": 120,
       "createdAt": "07/11/2026",
       "uploadTime": "14:36",
+      "isFavorite": false,
+      "shuffleQuestions": false,
+      "shuffleOptions": false,
+      "sourceType": "manual",
       "questions": [
         {
           "id": "q-1794036970804-1",
@@ -11357,10 +11361,10 @@
             "C": "Tính theo cùng một chiều thì trình tự nucleotide ở mạch số II giống với trình tự nucleotide ở mạch số VI.",
             "D": "Vị trí số V là enzyme tháo xoắn, nó trượt từ vị trí đang xét hướng ra vị trí số I trên hình."
           },
-          "correctAnswer": "A",
+          "correctAnswer": "B",
           "correctAnswers": [
-            "A",
-            "B"
+            "B",
+            "C"
           ],
           "explanation": "a) Đúng (mạch mới tổng hợp gián đoạn có chiều 5' -> 3' hướng từ trong chạc ra đầu I, nên đầu I trên mạch khuôn là đầu 3'). | b) Đúng (III là đoạn Okazaki, IV là đoạn RNA mồi). | c) Sai (mạch II và mạch VI cùng bổ sung với mạch khuôn dưới nhưng NGƯỢC CHIỀU nhau, nên nếu đọc theo cùng 1 chiều thì trình tự ngược nhau). | d) Sai (V là enzyme tháo xoắn trượt về phía bên trái vào đoạn DNA chưa tách mạch)."
         },
@@ -11395,8 +11399,7 @@
           "correctAnswer": "C",
           "correctAnswers": [
             "C",
-            "D",
-            "A"
+            "D"
           ]
         },
         {
@@ -11566,10 +11569,7 @@
           "shortAnswer": "801",
           "explanation": "L = 408 nm = 4080 A => N = 2400 nu. Giải hệ (2A + 2G = 2400; 2A + 3G = 3200) được G = 800, A = 400. Đột biến thêm 1 cặp G - C => Số nucleotide loại G sau đột biến = 800 + 1 = 801."
         }
-      ],
-      "shuffleQuestions": false,
-      "shuffleOptions": false,
-      "isFavorite": false
+      ]
     },
     {
       "id": "exam-1794025184391",
