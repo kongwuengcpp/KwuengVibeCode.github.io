@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-12T14:58:28.399Z",
+  "updatedAt": "2026-11-12T16:20:58.804Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "-Mục tri ân người đóng góp :\n+ Đỗ Văn Long 12B3 (Địa , Sử, KTPL , Tin)\n+ Nguyễn Thị Tuyền 12B1 (Sinh)\n+ Đỗ Hữu Đông 12B2 (Sử)\n+  Hồ Quỳnh Như 12B2 (Sử)\n+ Lê Thị Quỳnh Nhi 12B2 (Sử)\n+ Nguyễn Đỗ Tường Vy 12B2 (Sử) \n+ Nguyễn Nguyễn Khánh Băng 12B2 (Sử)\nHẹn Gặp Lại Vào Cuối Kì",
@@ -10649,7 +10649,7 @@
             "C": "Sợi cơ bản, sợi nhiễm sắc, siêu xoắn, chromatide.",
             "D": "Nucleosome, siêu xoắn, sợi nhiễm sắc, chromatide."
           },
-          "correctAnswer": "B",
+          "correctAnswer": "A",
           "explanation": "Trật tự cuộn xoắn từ nhỏ đến lớn: Nucleosome / sợi cơ bản (10-11 nm) -> Sợi nhiễm sắc (30 nm) -> Siêu xoắn (300 nm) -> Chromatid (700 nm). (Lưu ý: B và C đều đúng thứ tự tăng dần)."
         },
         {
@@ -11380,7 +11380,8 @@
           },
           "correctAnswer": "A",
           "correctAnswers": [
-            "A"
+            "A",
+            "D"
           ],
           "explanation": "a) Đúng (theo hình chuẩn của câu hỏi trong ngân hàng đề: dịch mã 10 aa, cắt bỏ aa mở đầu Met còn 9 aa). | b) Sai (codon Val trên mRNA là 5'GUU3' nên anticodon trên tRNA là 3'CAA5' hay 5'AAC3'; lưu ý nếu chỉ xét chữ cái CAA không tính chiều thì chọn Đúng). | c) Sai (chiều dịch chuyển ribosome từ Y' -> Z' là chiều 5' -> 3' của mRNA). | d) Sai (sau Val còn 2 bộ ba mã hóa aa nữa trước bộ ba kết thúc nên có 2 aa được bổ sung thêm)."
         },
@@ -11449,10 +11450,10 @@
             "C": "Nếu không có thể truyền plasmid thì tế bào nhận không có khả năng phân chia và nhân lên.",
             "D": "Nhờ có thể truyền plasmid mà gen cần chuyển [được gắn vào DNA vùng nhân của tế bào nhận]."
           },
-          "correctAnswer": "B",
+          "correctAnswer": "A",
           "correctAnswers": [
-            "B",
-            "A"
+            "A",
+            "B"
           ]
         },
         {
@@ -11469,6 +11470,7 @@
           "correctAnswer": "A",
           "correctAnswers": [
             "A",
+            "B",
             "D"
           ]
         },
@@ -11525,7 +11527,7 @@
           "id": "q-1794036970804-62",
           "number": 62,
           "type": "short",
-          "text": "(Trả lời ngắn) (VD) Giả sử một đoạn DNA ở sinh vật nhân sơ có 1500 cặp nucleotide và số nucleotide loại A chiếm 15% tổng số nucleotide của đoạn đó. Trên mạch 1 của đoạn DNA có 150 số nucleotide loại T và có 450 số nucleotide G. Kết luận nào sau đây đúng khi nói về đoạn DNA trên?",
+          "text": "Câu 3: (VD) Giả sử một đoạn DNA ở sinh vật nhân sơ có 1500 cặp nucleotide và số nucleotide loại A chiếm 15% tổng số nucleotide của đoạn đó. Trên mạch 1 của đoạn DNA có 150 số nucleotide loại T và có 450 số nucleotide G. Kết luận nào sau đây đúng khi nói về đoạn DNA trên?\n1. Trên mạch 1 có G/C=2/3.\n2. Trên mạch 2 có số nucleotide T= 250.\n3. Trên mạch 2 có T=2A.\n4. Tổng số C nucleotide trên cả 2 mạch là 1000.",
           "options": {
             "A": "Phương án A",
             "B": "Phương án B",
@@ -11533,7 +11535,7 @@
             "D": "Phương án D"
           },
           "correctAnswer": "A",
-          "shortAnswer": "Trên mạch 2 có T = 2A; T = 2A; C",
+          "shortAnswer": "3",
           "explanation": "N = 3000 nu => A = T = 450; G = C = 1050. Mạch 1 có T1 = 150 => A1 = 450 - 150 = 300. Suy ra mạch 2 có A2 = T1 = 150 và T2 = A1 = 300 => Trên mạch 2 có T2 = 2A2 (300 = 2 x 150) => Chọn C. (A sai vì G1/C1 = 450/600 = 3/4; B sai vì T2 = 300; D sai vì tổng C = 1050)."
         },
         {
