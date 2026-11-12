@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-12T08:25:25.708Z",
+  "updatedAt": "2026-11-12T08:29:44.522Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "Tàm tạm",
@@ -11469,10 +11469,9 @@
           "correctAnswer": "A",
           "correctAnswers": [
             "A",
-            "B",
             "D"
           ],
-          "explanation": "a) Đúng. | b) Đúng (P: AA x aa -> F1: Aa -> F2: 1/4 AA : 2/4 Aa : 1/4 aa; khi F2 tự thụ phấn: 1/4 AA cho toàn hạt trơn, 1/4 aa cho toàn hạt nhăn, 1/2 Aa cho cả hạt trơn và nhăn). | c) Sai (xác suất hạt trơn ở F2 là 3/4 khác 1/2). | d) Đúng: C(5,3) x (3/4)^3 x (1/4)^2 = 10 x 27/1024 = 135/512."
+          "explanation": ""
         },
         {
           "id": "q-1794036970804-59",
