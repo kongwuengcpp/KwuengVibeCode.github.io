@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-12T08:21:29.675Z",
+  "updatedAt": "2026-11-12T08:25:25.708Z",
   "branding": {
     "title": "Ôn Tập Online",
     "subtitle": "Tàm tạm",
@@ -11304,12 +11304,11 @@
             "C": "Sợi NST 10 nm được luồn vào các vòng protein tạo ra các vòng nhô ra khỏi phía ngoài khung NST làm cho chiều dài NST giảm mạnh và tăng dần chiều rộng.",
             "D": "Sợi NST ở kỳ đầu có đường kính lên đến 700 nm."
           },
-          "correctAnswer": "A",
+          "correctAnswer": "C",
           "correctAnswers": [
-            "A",
             "C"
           ],
-          "explanation": "a) Đúng. | b) Sai (condensin I và II là protein không phải histone). | c) Đúng. | d) Sai (đường kính 700 nm của chromatid đạt được ở kỳ giữa khi co xoắn cực đại, còn ở kỳ đầu đạt mức ~300 nm)."
+          "explanation": "a) Sai 30nm. | b) Sai (condensin I và II là protein không phải histone). | c) Đúng. | d) Sai (đường kính 700 nm của chromatid đạt được ở kỳ giữa khi co xoắn cực đại, còn ở kỳ đầu đạt mức ~300 nm)."
         },
         {
           "id": "q-1794036970804-50",
