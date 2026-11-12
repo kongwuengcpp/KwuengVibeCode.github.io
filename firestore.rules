@@ -40,7 +40,7 @@ service cloud.firestore {
       return data.keys().hasAll(['title', 'subtitle', 'version', 'updatedAt', 'adminToken'])
         && data.keys().hasOnly(['title', 'subtitle', 'version', 'logoUrl', 'updatedAt', 'adminToken'])
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
-        && data.subtitle is string && data.subtitle.size() >= 1 && data.subtitle.size() <= 200
+        && data.subtitle is string && data.subtitle.size() >= 1 && data.subtitle.size() <= 2000
         && data.version is string && data.version.size() >= 1 && data.version.size() <= 100
         && (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 900000))
         && data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 64

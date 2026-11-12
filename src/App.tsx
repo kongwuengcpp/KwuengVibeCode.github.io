@@ -722,7 +722,8 @@ export default function App() {
   // Sync document title with branding
   useEffect(() => {
     if (branding.title) {
-      document.title = `${branding.title} - ${branding.subtitle}`;
+      const firstLine = branding.subtitle?.split(/\r?\n/)[0]?.trim();
+      document.title = firstLine ? `${branding.title} - ${firstLine}` : branding.title;
     }
   }, [branding]);
 

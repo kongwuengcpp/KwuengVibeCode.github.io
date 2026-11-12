@@ -581,7 +581,7 @@ export const CreateExamView: React.FC<CreateExamViewProps> = ({
                 </span>
               </div>
               <p className="text-[11px] sm:text-xs text-slate-500 font-medium truncate">
-                {branding.title} · {branding.subtitle}
+                {branding.title} · {branding.subtitle.split(/\r?\n/)[0]}
               </p>
             </div>
           </div>

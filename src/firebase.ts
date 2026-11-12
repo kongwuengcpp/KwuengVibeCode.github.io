@@ -192,7 +192,7 @@ export function sanitizeSiteBrandingPayload(branding: SiteBranding): Record<stri
     String(branding.title || DEFAULT_SITE_BRANDING.title).trim().slice(0, 200) ||
     DEFAULT_SITE_BRANDING.title;
   const subtitle =
-    String(branding.subtitle || DEFAULT_SITE_BRANDING.subtitle).trim().slice(0, 200) ||
+    String(branding.subtitle || DEFAULT_SITE_BRANDING.subtitle).trim().slice(0, 2000) ||
     DEFAULT_SITE_BRANDING.subtitle;
   const version =
     String(branding.version || DEFAULT_SITE_BRANDING.version).trim().slice(0, 100) ||

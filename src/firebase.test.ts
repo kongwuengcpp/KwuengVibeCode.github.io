@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   sanitizeExamPayload,
+  sanitizeSiteBrandingPayload,
   estimateExamBytes,
   ExamTooLargeError,
   syncAllToCloud,
@@ -155,3 +156,27 @@ test('syncAllToCloud: reports success === false, count === 2, failed.length === 
   assert.equal(result.failed[0].id, 'exam-2');
   assert.equal(result.failed[0].title, 'Đề 2 (Nặng)');
 });
+
+test('sanitizeSiteBrandingPayload: preserves multiline subtitle with contributor credits up to 2000 characters', () => {
+  const multilineSubtitle = [
+    'Mục tri ân người đóng góp sửa chữa đáp án :',
+    '- Nguyễn Công Quang (12B2)',
+    '- Bạn Trần Minh Quân (Đóng góp đề Lý & Hóa)',
+    '- Bạn Lê Thị Mai Anh (Rà soát đáp án Sinh học & Lịch sử)',
+    '- Tập thể lớp 12B2 trường THPT',
+    'Cảm ơn tất cả các bạn đã đồng hành xây dựng ngân hàng đề!',
+  ].join('\n');
+
+  assert.ok(multilineSubtitle.length > 200, 'Test string should exceed old 200-char limit');
+
+  const payload = sanitizeSiteBrandingPayload({
+    title: 'Ôn Tập Online',
+    subtitle: multilineSubtitle,
+    version: 'VERSION 3.6.6.7',
+    logoUrl: '',
+  });
+
+  assert.equal(payload.subtitle, multilineSubtitle);
+  assert.ok((payload.subtitle as string).includes('\n- Nguyễn Công Quang'));
+});
+

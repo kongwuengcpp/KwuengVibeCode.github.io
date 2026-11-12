@@ -15,7 +15,7 @@
           "type": "string",
           "description": "Creator or subtitle label",
           "minLength": 1,
-          "maxLength": 200
+          "maxLength": 2000
         },
         "version": {
           "type": "string",

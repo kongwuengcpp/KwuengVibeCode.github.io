@@ -874,7 +874,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
 
-              <p className="text-sm font-medium text-slate-500 mt-1.5">
+              <p className="text-sm font-medium text-slate-500 mt-1.5 whitespace-pre-line leading-relaxed">
                 {branding.subtitle}
               </p>
 
@@ -1097,24 +1097,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     type="text"
                     value={editTitle}
                     onChange={(e) => setEditTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.preventDefault();
+                    }}
                     placeholder="Ví dụ: Luyện đề Online"
                     className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
                     required
                   />
                 </div>
 
-                {/* Dòng chữ phụ / Người tạo */}
+                {/* Dòng chữ phụ / Người tạo / Ghi công đóng góp */}
                 <div>
-                  <label htmlFor="edit-site-subtitle" className="block text-xs font-bold text-slate-700 mb-1">
-                    Dòng chữ phụ / Người tạo
-                  </label>
-                  <input
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor="edit-site-subtitle" className="block text-xs font-bold text-slate-700">
+                      Mục giới thiệu / Người tạo / Ghi công đóng góp
+                    </label>
+                    <span className="text-[11px] font-medium text-slate-400">
+                      Nhấn Enter để xuống dòng
+                    </span>
+                  </div>
+                  <textarea
                     id="edit-site-subtitle"
-                    type="text"
+                    rows={4}
                     value={editSubtitle}
                     onChange={(e) => setEditSubtitle(e.target.value)}
-                    placeholder="Ví dụ: From : NguyenCongQuang"
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                    placeholder={'Ví dụ:\nFrom : NguyenCongQuang\nMục tri ân người đóng góp sửa chữa đáp án :\n- Bạn A\n- Bạn B'}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-800 leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#2563eb] resize-y"
                     required
                   />
                 </div>
@@ -1129,6 +1137,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     type="text"
                     value={editVersion}
                     onChange={(e) => setEditVersion(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.preventDefault();
+                    }}
                     placeholder="Ví dụ: VERSION 4.16"
                     className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
                   />
@@ -2139,24 +2150,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   type="text"
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.preventDefault();
+                  }}
                   placeholder="Ví dụ: Luyện đề Online"
                   className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
                   required
                 />
               </div>
 
-              {/* Dòng chữ phụ / Người tạo */}
+              {/* Dòng chữ phụ / Người tạo / Ghi công đóng góp */}
               <div>
-                <label htmlFor="edit-site-subtitle" className="block text-xs font-bold text-slate-700 mb-1">
-                  Dòng chữ phụ / Người tạo
-                </label>
-                <input
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="edit-site-subtitle" className="block text-xs font-bold text-slate-700">
+                    Mục giới thiệu / Người tạo / Ghi công đóng góp
+                  </label>
+                  <span className="text-[11px] font-medium text-slate-400">
+                    Nhấn Enter để xuống dòng
+                  </span>
+                </div>
+                <textarea
                   id="edit-site-subtitle"
-                  type="text"
+                  rows={4}
                   value={editSubtitle}
                   onChange={(e) => setEditSubtitle(e.target.value)}
-                  placeholder="Ví dụ: From : NguyenCongQuang"
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
+                  placeholder={'Ví dụ:\nFrom : NguyenCongQuang\nMục tri ân người đóng góp sửa chữa đáp án :\n- Bạn A\n- Bạn B'}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-800 leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#2563eb] resize-y"
                   required
                 />
               </div>
@@ -2171,6 +2190,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   type="text"
                   value={editVersion}
                   onChange={(e) => setEditVersion(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.preventDefault();
+                  }}
                   placeholder="Ví dụ: VERSION 4.16"
                   className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563eb]"
                 />
